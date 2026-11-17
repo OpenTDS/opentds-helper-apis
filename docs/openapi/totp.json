@@ -1,0 +1,285 @@
+{
+ "tag": {
+  "name": "totp",
+  "description": "TOTP secret store and RFC 6238 code generation for MFA-protected test accounts."
+ },
+ "paths": {
+  "/totp/set": {
+   "get": {
+    "tags": [
+     "totp"
+    ],
+    "operationId": "totpSet",
+    "summary": "Store a TOTP secret for a user",
+    "description": "Saves the base32 secret (as shown under the QR code during MFA enrolment, or decoded from the otpauth:// URI) for user within key. Overwrites any previous secret. digits, period and algorithm are stored with it and used by totp/get.",
+    "parameters": [
+     {
+      "name": "key",
+      "in": "query",
+      "required": true,
+      "schema": {
+       "type": "string"
+      },
+      "description": "Namespace, usually one per test run. 1-128 characters: letters, digits and . _ - : @ + =, starting with a letter, digit or +. Case-sensitive.",
+      "example": "run-7Q2K9ZX4M1"
+     },
+     {
+      "name": "user",
+      "in": "query",
+      "required": true,
+      "schema": {
+       "type": "string"
+      },
+      "description": "User within the key, typically the login name.",
+      "example": "alice@example.com"
+     },
+     {
+      "name": "secret",
+      "in": "query",
+      "required": true,
+      "schema": {
+       "type": "string"
+      },
+      "description": "Base32 TOTP secret. Spaces and hyphens are ignored; case-insensitive.",
+      "example": "JBSWY3DPEHPK3PXP"
+     },
+     {
+      "name": "digits",
+      "in": "query",
+      "required": false,
+      "schema": {
+       "type": "integer",
+       "default": 6
+      },
+      "description": "Code length: 6 (default), 7 or 8."
+     },
+     {
+      "name": "period",
+      "in": "query",
+      "required": false,
+      "schema": {
+       "type": "integer",
+       "default": 30
+      },
+      "description": "Time step in seconds, 10-300. Default 30."
+     },
+     {
+      "name": "algorithm",
+      "in": "query",
+      "required": false,
+      "schema": {
+       "type": "string",
+       "default": "sha1",
+       "enum": [
+        "sha1",
+        "sha256",
+        "sha512"
+       ]
+      },
+      "description": "HMAC algorithm: sha1 (default), sha256 or sha512."
+     }
+    ],
+    "responses": {
+     "200": {
+      "description": "OK",
+      "content": {
+       "application/json": {
+        "schema": {
+         "type": "object",
+         "required": [
+          "key",
+          "user",
+          "saved",
+          "savedTime",
+          "digits",
+          "period",
+          "algorithm"
+         ],
+         "properties": {
+          "key": {
+           "type": "string"
+          },
+          "user": {
+           "type": "string"
+          },
+          "saved": {
+           "type": "boolean"
+          },
+          "savedTime": {
+           "type": "integer"
+          },
+          "digits": {
+           "type": "integer"
+          },
+          "period": {
+           "type": "integer"
+          },
+          "algorithm": {
+           "type": "string"
+          }
+         }
+        },
+        "example": {
+         "key": "run-7Q2K9ZX4M1",
+         "user": "alice@example.com",
+         "saved": true,
+         "savedTime": 1759112345,
+         "digits": 6,
+         "period": 30,
+         "algorithm": "sha1"
+        }
+       }
+      }
+     },
+     "400": {
+      "$ref": "#/components/responses/Error"
+     }
+    }
+   }
+  },
+  "/totp/get": {
+   "get": {
+    "tags": [
+     "totp"
+    ],
+    "operationId": "totpGet",
+    "summary": "Get the current, next and previous TOTP codes",
+    "description": "Either key + user (codes from the stored secret) or secret alone (stateless: nothing is stored). Returns code, nextCode, previousCode and secondsRemaining. If secondsRemaining is small (under ~3 s) the code may expire before the system under test checks it - submit nextCode after waiting, or just wait and call again.",
+    "parameters": [
+     {
+      "name": "key",
+      "in": "query",
+      "required": false,
+      "schema": {
+       "type": "string"
+      },
+      "description": "Namespace, usually one per test run. 1-128 characters: letters, digits and . _ - : @ + =, starting with a letter, digit or +. Case-sensitive. Required unless secret is given.",
+      "example": "run-7Q2K9ZX4M1"
+     },
+     {
+      "name": "user",
+      "in": "query",
+      "required": false,
+      "schema": {
+       "type": "string"
+      },
+      "description": "User within the key. Required with key.",
+      "example": "alice@example.com"
+     },
+     {
+      "name": "secret",
+      "in": "query",
+      "required": false,
+      "schema": {
+       "type": "string"
+      },
+      "description": "Stateless mode: base32 secret to generate codes from directly.",
+      "example": "JBSWY3DPEHPK3PXP"
+     },
+     {
+      "name": "digits",
+      "in": "query",
+      "required": false,
+      "schema": {
+       "type": "integer",
+       "default": 6
+      },
+      "description": "Code length: 6 (default), 7 or 8."
+     },
+     {
+      "name": "period",
+      "in": "query",
+      "required": false,
+      "schema": {
+       "type": "integer",
+       "default": 30
+      },
+      "description": "Time step in seconds, 10-300. Default 30."
+     },
+     {
+      "name": "algorithm",
+      "in": "query",
+      "required": false,
+      "schema": {
+       "type": "string",
+       "default": "sha1",
+       "enum": [
+        "sha1",
+        "sha256",
+        "sha512"
+       ]
+      },
+      "description": "HMAC algorithm: sha1 (default), sha256 or sha512."
+     }
+    ],
+    "responses": {
+     "200": {
+      "description": "OK",
+      "content": {
+       "application/json": {
+        "schema": {
+         "type": "object",
+         "required": [
+          "code",
+          "nextCode",
+          "previousCode",
+          "secondsRemaining",
+          "period",
+          "digits",
+          "algorithm"
+         ],
+         "properties": {
+          "key": {
+           "type": "string"
+          },
+          "user": {
+           "type": "string"
+          },
+          "code": {
+           "type": "string"
+          },
+          "nextCode": {
+           "type": "string"
+          },
+          "previousCode": {
+           "type": "string"
+          },
+          "secondsRemaining": {
+           "type": "number"
+          },
+          "period": {
+           "type": "integer"
+          },
+          "digits": {
+           "type": "integer"
+          },
+          "algorithm": {
+           "type": "string"
+          }
+         }
+        },
+        "example": {
+         "key": "run-7Q2K9ZX4M1",
+         "user": "alice@example.com",
+         "code": "492039",
+         "nextCode": "118220",
+         "previousCode": "870412",
+         "secondsRemaining": 17.42,
+         "period": 30,
+         "digits": 6,
+         "algorithm": "sha1"
+        }
+       }
+      }
+     },
+     "400": {
+      "$ref": "#/components/responses/Error"
+     },
+     "404": {
+      "$ref": "#/components/responses/Error"
+     }
+    }
+   }
+  }
+ }
+}

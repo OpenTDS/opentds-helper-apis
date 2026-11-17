@@ -1,0 +1,44 @@
+# Copy to terraform.tfvars and edit. Only domain and hosted_zone_id are required.
+
+aws_region     = "us-west-1"   # must support SES email receiving
+domain         = "example.com"
+hosted_zone_id = "Z0123456789ABCDEFGHIJ"
+
+# api_host_label  = "api"            # -> https://api.example.com/v1
+# serve_apex_site = true             # also serve the landing page at https://example.com/
+# name_prefix     = "testhelper-v1"  # functions, roles, tables, APIs, SES rule set
+# bucket_prefix   = "testhelper-v1"  # <prefix>-<purpose>-<account>-<region>
+
+# ---- SES. Set to false for anything that already exists in the account/zone
+# (Route 53 refuses to create a record that is already there).
+# create_ses_identity      = true
+# manage_mail_dns_records  = true   # apex MX + mail.<domain> MX/TXT
+# manage_spf_dmarc_records = true   # apex SPF TXT + _dmarc TXT
+# create_receipt_rule      = true
+# existing_receipt_rule_set = ""    # name the ACTIVE rule set to add this rule to it instead
+# activate_receipt_rule_set = true  # replaces any other active rule set - read the plan
+# dmarc_policy             = "none"
+
+# Who mail/send may deliver to, besides addresses at domain. The endpoint is public: keep it short.
+# email_send_allowed_to      = ["support@app.example.org"]
+# email_send_allowed_domains = ["*.test.example.org"]
+
+# ---- Limits
+# throttle_rate_limit    = 500
+# throttle_burst_limit   = 1000
+# webhook_retention_days = 30
+
+# ---- SMS
+# sms_device_keys           = []      # empty: use the generated key (terraform output -raw sms_device_key)
+# generate_sms_device_key   = true
+# sms_send_allowed_numbers  = ["+61400000001"]
+# sms_region                = "ap-southeast-2"
+# sms_send_interval_seconds = 10
+
+# ---- Voice (voice/say speaks through Amazon Polly)
+# voice_region           = "ap-southeast-2"  # must offer the engine: us-west-1 has neither neural nor generative
+# voice_name             = "Olivia"
+# voice_engine           = "neural"          # standard | neural | generative
+# voice_daily_characters = 25000             # new synthesis per UTC day; 0 = off (stored audio still served)
+
+# tags = { Application = "testhelper-v1", Owner = "qa-team" }

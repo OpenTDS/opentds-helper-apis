@@ -1,0 +1,729 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Test Helper API</title>
+<meta name="description" content="Free helper endpoints for end-to-end and load test automation: test-data queues, an email catcher, TOTP codes, webhook capture, locks, QR codes, performance statistics and spoken utterances for voice interfaces. Every call is a plain HTTPS GET.">
+<link rel="alternate" type="text/plain" title="LLM guide" href="{BASE_URL}/llms.txt">
+<link rel="service-desc" type="application/json" href="{BASE_URL}/openapi.json">
+<style>
+:root {
+  --bg: #fbfbf9; --panel: #ffffff; --ink: #1c1d1f; --muted: #5d6168; --line: #e3e3de;
+  --accent: #0b6e4f; --accent-soft: #e4f2ec; --code-bg: #f2f2ee; --warn-soft: #fff6e0; --warn-line: #e8cf8a;
+  color-scheme: light;
+}
+@media (prefers-color-scheme: dark) {
+  :root {
+    --bg: #141517; --panel: #1c1d20; --ink: #e8e8e6; --muted: #a2a6ad; --line: #2e3034;
+    --accent: #5fcf9f; --accent-soft: #19302a; --code-bg: #232428; --warn-soft: #2b2617; --warn-line: #5c4d20;
+    color-scheme: dark;
+  }
+}
+* { box-sizing: border-box; }
+html { -webkit-text-size-adjust: 100%; }
+body {
+  margin: 0; background: var(--bg); color: var(--ink);
+  font: 16px/1.6 system-ui, -apple-system, "Segoe UI", Roboto, "Helvetica Neue", Arial, sans-serif;
+}
+a { color: var(--accent); text-underline-offset: 2px; }
+code, pre { font-family: ui-monospace, SFMono-Regular, Menlo, Consolas, "Liberation Mono", monospace; font-size: 0.9em; }
+code { background: var(--code-bg); padding: 0.1em 0.35em; border-radius: 4px; overflow-wrap: anywhere; }
+pre { background: var(--code-bg); padding: 14px 16px; border-radius: 8px; overflow-x: auto; line-height: 1.5; margin: 12px 0; }
+pre code { background: none; padding: 0; }
+.wrap { max-width: 980px; margin: 0 auto; padding: 0 16px; }
+header.top { border-bottom: 1px solid var(--line); background: var(--panel); }
+header.top .wrap { display: flex; align-items: center; justify-content: space-between; gap: 16px; padding-top: 14px; padding-bottom: 14px; flex-wrap: wrap; }
+.brand { font-weight: 700; letter-spacing: -0.01em; }
+nav a { margin-left: 18px; color: var(--muted); text-decoration: none; font-size: 0.95em; }
+nav a:first-child { margin-left: 0; }
+nav a:hover { color: var(--accent); }
+.hero { padding: 56px 0 36px; }
+.hero h1 { font-size: clamp(1.9rem, 4.5vw, 2.8rem); line-height: 1.15; margin: 0 0 14px; letter-spacing: -0.02em; }
+.hero p.lede { font-size: 1.15rem; color: var(--muted); max-width: 44em; margin: 0 0 22px; }
+.buttons { display: flex; gap: 10px; flex-wrap: wrap; }
+.btn { display: inline-block; padding: 9px 16px; border-radius: 8px; border: 1px solid var(--line); text-decoration: none; color: var(--ink); background: var(--panel); font-weight: 600; font-size: 0.95em; }
+.btn.primary { background: var(--accent); border-color: var(--accent); color: #fff; }
+@media (prefers-color-scheme: dark) { .btn.primary { color: #0d1a15; } }
+section { padding: 30px 0; border-top: 1px solid var(--line); }
+h2 { font-size: 1.5rem; margin: 0 0 12px; letter-spacing: -0.01em; }
+h3 { font-size: 1.1rem; margin: 22px 0 6px; }
+p { margin: 0 0 12px; }
+.muted { color: var(--muted); }
+.grid { display: grid; grid-template-columns: repeat(auto-fit, minmax(270px, 1fr)); gap: 14px; margin-top: 14px; }
+.card { background: var(--panel); border: 1px solid var(--line); border-radius: 10px; padding: 16px 18px; }
+.card h3 { margin-top: 0; }
+.card h3 code { font-size: 1em; background: var(--accent-soft); color: var(--accent); }
+.card ul { margin: 8px 0 0; padding-left: 0; list-style: none; }
+.card li { padding: 3px 0; font-size: 0.93em; border-top: 1px dashed var(--line); }
+.card li:first-child { border-top: 0; }
+.card li code { font-size: 0.92em; }
+.card li span { color: var(--muted); display: block; font-size: 0.93em; }
+table { border-collapse: collapse; width: 100%; font-size: 0.95em; }
+th, td { text-align: left; padding: 8px 10px; border-bottom: 1px solid var(--line); vertical-align: top; }
+th { color: var(--muted); font-weight: 600; }
+.table-scroll { overflow-x: auto; }
+.callout { background: var(--accent-soft); border: 1px solid var(--accent); border-radius: 10px; padding: 18px 20px; }
+.callout h2 { margin-top: 0; }
+.status-line { display: inline-flex; align-items: center; gap: 8px; margin: 0 0 16px; padding: 5px 12px; border: 1px solid var(--accent); border-radius: 999px; background: var(--accent-soft); color: var(--ink); font-size: 0.9rem; }
+.status-line::before { content: ""; width: 8px; height: 8px; border-radius: 50%; background: var(--accent); flex: none; }
+.note { background: var(--warn-soft); border: 1px solid var(--warn-line); border-radius: 10px; padding: 14px 18px; }
+ol.steps { padding-left: 1.3em; }
+ol.steps li { margin-bottom: 8px; }
+.tabs { display: flex; gap: 4px; }
+.tab { appearance: none; border: 1px solid transparent; background: none; color: var(--muted); font: inherit; font-weight: 600; font-size: 0.95em; padding: 7px 14px; border-radius: 8px; cursor: pointer; }
+.tab:hover { color: var(--ink); }
+.tab[aria-selected="true"] { background: var(--accent-soft); color: var(--accent); border-color: var(--accent); }
+.subnav { display: flex; flex-wrap: wrap; gap: 6px 16px; padding: 14px 0 0; font-size: 0.93em; }
+.subnav a { color: var(--muted); text-decoration: none; }
+.subnav a:hover { color: var(--accent); }
+.live { display: grid; grid-template-columns: repeat(auto-fit, minmax(300px, 1fr)); gap: 14px; }
+.live .card h3 { display: flex; justify-content: space-between; align-items: baseline; gap: 8px; }
+.endpoint { font-size: 0.85em; color: var(--muted); overflow-wrap: anywhere; margin: 0 0 8px; }
+.kv { display: grid; grid-template-columns: max-content 1fr; gap: 3px 14px; font-size: 0.95em; margin: 0; }
+.kv dt { color: var(--muted); }
+.kv dd { margin: 0; font-family: ui-monospace, SFMono-Regular, Menlo, Consolas, monospace; overflow-wrap: anywhere; }
+.status { font-size: 0.8em; font-weight: 600; color: var(--muted); white-space: nowrap; }
+.status.ok { color: var(--accent); }
+.status.err { color: #b3261e; }
+details { margin-top: 8px; font-size: 0.9em; }
+details pre { max-height: 260px; }
+.controls { display: flex; flex-wrap: wrap; gap: 10px; align-items: center; margin: 12px 0 4px; }
+select, input[type=text] { font: inherit; font-size: 0.95em; padding: 6px 9px; border-radius: 7px; border: 1px solid var(--line); background: var(--panel); color: var(--ink); }
+input[type=text] { min-width: 0; width: 18em; max-width: 100%; }
+button.small, .btn-small { font: inherit; font-size: 0.9em; font-weight: 600; padding: 6px 12px; border-radius: 7px; border: 1px solid var(--line); background: var(--panel); color: var(--ink); cursor: pointer; }
+button.small.primary { background: var(--accent); border-color: var(--accent); color: #fff; }
+@media (prefers-color-scheme: dark) { button.small.primary { color: #0d1a15; } }
+.ex { list-style: none; margin: 10px 0 0; padding: 0; }
+.ex li { display: grid; grid-template-columns: 1fr auto; gap: 4px 12px; padding: 10px 0; border-top: 1px solid var(--line); align-items: start; }
+.ex li:first-child { border-top: 0; }
+.ex .what { font-weight: 600; }
+.ex .why { color: var(--muted); font-size: 0.92em; }
+.ex .url { grid-column: 1 / -1; font-size: 0.84em; background: var(--code-bg); border-radius: 6px; padding: 6px 9px; overflow-wrap: anywhere; font-family: ui-monospace, SFMono-Regular, Menlo, Consolas, monospace; }
+.ex .actions { display: flex; gap: 6px; grid-row: 1 / span 2; grid-column: 2; }
+.open { display: inline-block; padding: 5px 12px; border-radius: 7px; background: var(--accent); color: #fff; text-decoration: none; font-weight: 600; font-size: 0.9em; white-space: nowrap; }
+@media (prefers-color-scheme: dark) { .open { color: #0d1a15; } }
+.refbox { display: flex; flex-wrap: wrap; gap: 8px; align-items: center; background: var(--code-bg); border-radius: 8px; padding: 10px 12px; margin: 10px 0 0; font-size: 0.93em; }
+.ex-section { padding: 26px 0; border-top: 1px solid var(--line); }
+.ex-section h2 code { font-size: 0.9em; background: var(--accent-soft); color: var(--accent); }
+@media (max-width: 560px) { .ex li { grid-template-columns: 1fr; } .ex .actions { grid-row: auto; grid-column: 1; } }
+.phone { display: grid; grid-template-columns: auto 1fr; gap: 20px 28px; align-items: start; background: var(--panel); border: 1px solid var(--accent); border-radius: 12px; padding: 18px 20px; margin: 16px 0 6px; }
+.phone-qr img { display: block; background: #fff; padding: 8px; border-radius: 8px; width: 220px; height: 220px; }
+.phone-qr .endpoint { max-width: 236px; margin-top: 6px; }
+.phone-codes h3 { margin-top: 0; }
+.otp { font-family: ui-monospace, SFMono-Regular, Menlo, Consolas, monospace; font-size: 2.6rem; font-weight: 700; letter-spacing: 0.08em; color: var(--accent); line-height: 1.1; }
+.otp-bar { height: 6px; background: var(--code-bg); border-radius: 3px; overflow: hidden; margin: 8px 0 6px; max-width: 320px; }
+.otp-fill { height: 100%; background: var(--accent); transition: width 0.25s linear; }
+.otp-meta { font-size: 0.9em; margin-bottom: 6px; }
+@media (max-width: 640px) { .phone { grid-template-columns: 1fr; } }
+footer { border-top: 1px solid var(--line); padding: 26px 0 40px; color: var(--muted); font-size: 0.9em; }
+@media (max-width: 560px) { nav a { margin-left: 12px; } .hero { padding-top: 36px; } }
+</style>
+</head>
+<body>
+
+<header class="top">
+  <div class="wrap">
+    <div class="brand">Test Helper API</div>
+    <nav class="tabs" role="tablist" aria-label="Page">
+      <button class="tab" role="tab" id="tabbtn-overview" aria-controls="tab-overview" data-tab="overview">Overview</button>
+      <button class="tab" role="tab" id="tabbtn-examples" aria-controls="tab-examples" data-tab="examples">Live examples</button>
+    </nav>
+  </div>
+</header>
+
+<main class="wrap">
+<div id="tab-overview" role="tabpanel" aria-labelledby="tabbtn-overview">
+  <nav class="subnav" aria-label="Sections">
+    <a href="#how">How it works</a><a href="#services">Services</a><a href="#example">Worked example</a>
+    <a href="#try">Try it</a><a href="#open">Open use &amp; your own copy</a><a href="#email">Email policy</a><a href="#use">Acceptable use</a>
+    <a href="#examples">Live examples &rarr;</a>
+  </nav>
+
+  <div class="hero">
+    <p class="status-line">Version 1 is in the final stages of testing &middot;
+      <a href="#open">full source to deploy your own copy coming soon</a></p>
+    <h1>Helper endpoints for the hard parts of end-to-end testing</h1>
+    <p class="lede">Catch the email an application sends, answer its MFA prompt, share test data between
+      virtual users, prove a webhook fired, and gate a build on response times. Every call is a plain
+      HTTPS GET, so a test framework, Postman, LoadRunner, <code>curl</code> or an AI coding assistant can use
+      it with nothing but a URL.</p>
+    <div class="buttons">
+      <a class="btn primary" href="{BASE_URL}/llms.txt">Guide for AI assistants</a>
+      <a class="btn" href="{BASE_URL}/openapi.json">OpenAPI 3.2 spec</a>
+      <a class="btn" href="{BASE_URL}">Service index (JSON)</a>
+      <a class="btn" href="https://testthis.now">Practice apps at testthis.now</a>
+    </div>
+  </div>
+
+  <section id="how">
+    <h2>How it works</h2>
+    <p>Every action has the same shape:</p>
+    <pre><code>{BASE_URL}/&lt;service&gt;/&lt;action&gt;?param=value</code></pre>
+    <p>Try one now — it returns five random codes you can use to keep your test run separate from
+      everyone else's:</p>
+    <pre><code><a href="{BASE_URL}/lists/codes">{BASE_URL}/lists/codes</a></code></pre>
+    <h3>The rules every service follows</h3>
+    <div class="table-scroll">
+    <table>
+      <tr><th>Rule</th><th>What it means</th></tr>
+      <tr><td>GET everywhere</td><td>Every action answers GET. The few that take a file or message body also accept POST.</td></tr>
+      <tr><td><code>key</code> is your namespace</td><td>Data lives under a key you choose. Nothing needs creating first. Use a fresh random key for each test run so runs never collide.</td></tr>
+      <tr><td>Same verbs, same meaning</td><td><code>push</code> appends, <code>pop</code> takes the next item, <code>get</code> reads one, <code>set</code> writes one, <code>list</code> reads many, <code>reset</code> rewinds, <code>clear</code> deletes.</td></tr>
+      <tr><td><code>wait</code> instead of polling</td><td>Calls that wait for something (an email, a webhook, a lock) take <code>wait=</code> seconds, up to 20, and return the moment it happens.</td></tr>
+      <tr><td>Empty is not an error</td><td>An empty queue returns HTTP 200 with <code>"exhausted": true</code>, so load-test tools don't count it as a failure.</td></tr>
+      <tr><td>Predictable errors</td><td>Every error is <code>{"error": "…", "status": 400}</code>. Parameter names are case-insensitive.</td></tr>
+      <tr><td>No sign-up</td><td>There are no accounts or API keys. That also means anyone who knows a key can read its data — see <a href="#use">acceptable use</a>.</td></tr>
+    </table>
+    </div>
+  </section>
+
+  <section id="services">
+    <h2>Services</h2>
+    <p class="muted">Each card lists the service's actions. Full parameters and example responses are in the
+      <a href="{BASE_URL}/openapi.json">OpenAPI spec</a> (3.2.1; <a href="{BASE_URL}/openapi-3.0.json">3.0.3 copy</a>
+      for tools that do not read 3.2 yet) and the <a href="{BASE_URL}/llms.txt">guide</a>.</p>
+    <div class="grid">
+{SERVICE_CARDS}
+    </div>
+  </section>
+
+  <section id="example">
+    <h2>A worked example: sign-up with email verification and MFA</h2>
+    <p>The flow most test suites find hardest to automate, end to end:</p>
+    <ol class="steps">
+      <li>Get a run key: <code>{BASE_URL}/lists/codes</code> → use <code>rand10</code>, e.g. <code>7Q2K9ZX4M1</code>.</li>
+      <li>Invent a person: <code>{BASE_URL}/names/get?region=AU&amp;seed=7Q2K9ZX4M1</code>.</li>
+      <li>Sign up in the application under test with the address <code>signup-7q2k9zx4m1@{MAIL_DOMAIN}</code>.</li>
+      <li>Wait for the verification email and read the code or link from its body:<br>
+        <code>{BASE_URL}/mail/pop?address=signup-7q2k9zx4m1@{MAIL_DOMAIN}&amp;wait=20</code></li>
+      <li>At the MFA enrolment screen, store the secret, then get the current code:<br>
+        <code>{BASE_URL}/totp/set?key=run-7Q2K9ZX4M1&amp;user=signup-7q2k9zx4m1&amp;secret=JBSWY3DPEHPK3PXP</code><br>
+        <code>{BASE_URL}/totp/get?key=run-7Q2K9ZX4M1&amp;user=signup-7q2k9zx4m1</code></li>
+      <li>Remember what you created so a teardown script can remove it:<br>
+        <code>{BASE_URL}/lists/cleanup/push?key=run-7Q2K9ZX4M1&amp;value=USER-1042</code></li>
+    </ol>
+  </section>
+
+  <section id="try">
+    <div class="callout">
+      <h2>Try it out against the practice applications at testthis.now</h2>
+      <p>The best way to learn these calls is to test something real. The applications hosted at
+        <a href="https://testthis.now">testthis.now</a> are practice targets for automated testing — sign-up
+        journeys, email verification, multi-factor login, documents and integrations — so they are the natural
+        place to put these endpoints to work.</p>
+      <p>Script a journey against one of them using <code>mail/pop</code> to catch its emails,
+        <code>totp</code> to answer its MFA prompts, <code>webhook</code> to capture its callbacks and
+        <code>lists</code> to share test accounts between virtual users. Or give your AI coding assistant the
+        guide at <a href="{BASE_URL}/llms.txt">{BASE_URL}/llms.txt</a> and ask it to write the test for you.</p>
+    </div>
+  </section>
+
+  <section id="open">
+    <h2>Open by design — and for enterprises, your own copy</h2>
+    <p>These endpoints are deliberately open: no sign-up, no API key, no login. That is what lets a test
+      framework, a load-test script or an AI assistant use them with nothing but a URL. You are welcome to use
+      them for learning, evaluation and your own test projects, within reasonable rate limits. Requests are
+      throttled, so very heavy or sustained traffic — a large load test, for example — belongs in your own
+      deployment.</p>
+    <div class="grid">
+      <div class="card">
+        <h3>For enterprise use, deploy it to your own cloud</h3>
+        <p>An open service is the wrong place for an organisation's test data. For enterprise use we recommend
+          running the whole stack in your own AWS account. Every endpoint then sits inside your environment and
+          under your organisation's own policies and security model — for example your own authentication in
+          front of the API, network restrictions, logging and monitoring, data residency and retention — and
+          its capacity is sized for your test volumes.</p>
+      </div>
+      <div class="card">
+        <h3>Version 1: final testing, source coming soon</h3>
+        <p>Version 1 of these API helpers is in the final stages of testing. When it is released, all of the
+          source files needed to deploy the entire stack will be available for download: the CloudFormation
+          template, the function code for every service, the deployment script and the documentation —
+          including the guide for AI assistants. Details will be published on this page.</p>
+      </div>
+    </div>
+  </section>
+
+  <section id="email">
+    <h2>How this service uses email</h2>
+    <p>Email is one of the services, so here is exactly what it sends and receives.</p>
+    <ul>
+      <li><strong>Receiving.</strong> Mail sent to any address at <code>{MAIL_DOMAIN}</code> is stored so a test
+        can read it back with <code>mail/pop</code>. Messages and their attachments are deleted automatically after 7 days.</li>
+      <li><strong>Sending is for testing only.</strong> <code>mail/send</code> lets a test deliver a message
+        <em>into</em> an application under test — for example to exercise an email-to-case or document-intake
+        feature. Messages are sent from <code>@{MAIL_DOMAIN}</code> addresses only.</li>
+      <li><strong>Recipients are restricted.</strong> The service will only send to addresses at
+        <code>{MAIL_DOMAIN}</code> itself and to a short, fixed allow-list of test domains set by the operator.
+        Any other recipient is refused before anything is sent, so it cannot be used to email the public.</li>
+      <li><strong>No marketing, no lists.</strong> There are no mailing lists, subscriptions or bulk
+        campaigns. Every message is a single, synthetic test message triggered by a test script.</li>
+      <li><strong>Bounces and complaints.</strong> Because recipients are test domains under the operator's
+        control, bounces and complaints are not expected. Amazon SES's account-level suppression list is enabled,
+        so any address that bounces or complains is not sent to again.</li>
+      <li><strong>Volumes are low.</strong> Typical use is a handful of messages per test run.</li>
+    </ul>
+  </section>
+
+  <section id="use">
+    <h2>Acceptable use</h2>
+    <div class="note">
+      <p><strong>Use synthetic data only.</strong> There is no authentication: anyone who knows or guesses a key
+        or an email address on this domain can read what is stored under it. Never store real personal information,
+        real passwords, or production data here.</p>
+      <p>Text messages: real texts are only accepted from registered capture handsets that hold the
+        device key, and real sends only go to those handsets. Anyone who knows a handset's number can read
+        its recent texts, so they are test SIMs only.</p>
+      <p style="margin:0">Requests are rate-limited (see <a href="#open">open use</a>). Stored data expires: received email after 7 days, captured
+        webhooks after 30 days, uploaded import files after 90 days. Don't use the email service to contact
+        anyone outside your own test environment.</p>
+    </div>
+  </section>
+
+</div>
+
+<div id="tab-examples" role="tabpanel" aria-labelledby="tabbtn-examples" hidden>
+  <div class="hero" style="padding-bottom:18px">
+    <h1>Live examples</h1>
+    <p class="lede">This page has just called two endpoints for you: <code>lists/codes</code> for a unique run
+      key and <code>names/get</code> for a test persona. Every example below is built from that data. Click
+      <strong>Open</strong> to run it — each opens in its own window, so you can watch one call change what the
+      next one returns.</p>
+    <div class="controls">
+      <label for="region">Persona region</label>
+      <select id="region">
+        <option>AU</option><option>NZ</option><option>GB</option><option>IE</option><option>US</option>
+        <option>CA</option><option>DE</option><option>FR</option><option>ES</option><option>IT</option>
+        <option>NL</option><option>PL</option><option>IN</option><option>CN</option><option>JP</option>
+      </select>
+      <button class="small primary" id="newrun">New run</button>
+      <label><input type="checkbox" id="popup" checked> open in a new window (unticked: new tab)</label>
+    </div>
+  </div>
+
+  <div class="live">
+    <div class="card" id="card-codes">
+      <h3>Run key <span class="status" id="st-codes">loading…</span></h3>
+      <p class="endpoint">GET <a id="ep-codes" target="_blank" rel="noopener"></a></p>
+      <dl class="kv" id="kv-codes"></dl>
+      <details><summary>Raw response</summary><pre><code id="raw-codes"></code></pre></details>
+    </div>
+    <div class="card" id="card-names">
+      <h3>Test persona <span class="status" id="st-names">loading…</span></h3>
+      <p class="endpoint">GET <a id="ep-names" target="_blank" rel="noopener"></a></p>
+      <dl class="kv" id="kv-names"></dl>
+      <details><summary>Raw response</summary><pre><code id="raw-names"></code></pre></details>
+    </div>
+    <div class="card">
+      <h3>Values used below</h3>
+      <p class="endpoint">Derived from the two calls, so your clicks don't collide with anyone else's.</p>
+      <dl class="kv" id="kv-derived"></dl>
+    </div>
+  </div>
+
+  <div id="ex-sections"></div>
+</div>
+</main>
+
+<footer>
+  <div class="wrap">
+    Test Helper API v1 (final testing) ·
+    <a href="{BASE_URL}/llms.txt">LLM guide</a> ·
+    <a href="{BASE_URL}/openapi.json">OpenAPI 3.2</a> ·
+    <a href="{BASE_URL}/openapi-3.0.json">OpenAPI 3.0</a> ·
+    <a href="{ROOT_URL}/.well-known/api-catalog">API catalog</a> ·
+    <a href="https://testthis.now">Practice applications</a>
+  </div>
+</footer>
+
+<script>
+(function () {
+  'use strict';
+  var BASE = '{BASE_URL}';
+  var DOMAIN = '{MAIL_DOMAIN}';
+  // A fresh random base32 secret per run, so the entry on a phone is unique.
+  function newSecret() {
+    var A = 'ABCDEFGHIJKLMNOPQRSTUVWXYZ234567', b = new Uint8Array(32), out = '';  // 32 chars = 160 bits, the usual size
+    crypto.getRandomValues(b);
+    for (var i = 0; i < b.length; i++) out += A[b[i] & 31];
+    return out;
+  }
+
+  // ------------------------------------------------------------- tabs
+  var tabs = { overview: document.getElementById('tab-overview'), examples: document.getElementById('tab-examples') };
+  var started = false;
+  function show(name, scroll) {
+    Object.keys(tabs).forEach(function (k) {
+      tabs[k].hidden = k !== name;
+      document.getElementById('tabbtn-' + k).setAttribute('aria-selected', String(k === name));
+    });
+    if (name === 'examples' && !started) { started = true; newRun(); }
+    if (scroll) window.scrollTo(0, 0);
+  }
+  function fromHash() {
+    var h = (location.hash || '').slice(1);
+    if (h === 'examples' || h.indexOf('ex-') === 0) { show('examples'); if (h !== 'examples') { var el = document.getElementById(h); if (el) el.scrollIntoView(); } }
+    else { show('overview'); }
+  }
+  document.querySelectorAll('.tab').forEach(function (b) {
+    b.addEventListener('click', function () {
+      var name = b.getAttribute('data-tab');
+      history.replaceState(null, '', name === 'examples' ? '#examples' : location.pathname);
+      show(name, true);
+    });
+  });
+  window.addEventListener('hashchange', fromHash);
+
+  // ------------------------------------------------------------- helpers
+  function q(params) {
+    return Object.keys(params).filter(function (k) { return params[k] !== undefined && params[k] !== null; })
+      .map(function (k) { return encodeURIComponent(k) + '=' + enc(params[k]); }).join('&');
+  }
+  // encodeURIComponent, but leaving @ : , / readable - all legal in a query value.
+  function enc(v) {
+    return encodeURIComponent(String(v)).replace(/%40/g, '@').replace(/%3A/g, ':')
+      .replace(/%2C/g, ',').replace(/%2F/g, '/');
+  }
+  function url(path, params) { var s = params ? q(params) : ''; return BASE + '/' + path + (s ? '?' + s : ''); }
+  function el(tag, attrs, text) {
+    var e = document.createElement(tag);
+    Object.keys(attrs || {}).forEach(function (k) { e.setAttribute(k, attrs[k]); });
+    if (text !== undefined) e.textContent = text;
+    return e;
+  }
+  function kv(dl, pairs) {
+    dl.textContent = '';
+    pairs.forEach(function (p) { dl.appendChild(el('dt', {}, p[0])); dl.appendChild(el('dd', {}, p[1])); });
+  }
+  function slug(s) { return String(s || '').toLowerCase().normalize('NFD').replace(/[̀-ͯ]/g, '').replace(/[^a-z0-9]+/g, ''); }
+  function openWin(u) {
+    // A play=true page may start its sound without a click only when the browser can see
+    // that it was reached by a click on this site - which it works out from the referrer.
+    // So those links keep the referrer; everything else opens without one.
+    var features = /[?&]play=true(&|$)/.test(u) ? 'noopener' : 'noopener,noreferrer';
+    if (document.getElementById('popup').checked) { features += ',width=980,height=760'; }
+    window.open(u, '_blank', features);
+  }
+  async function getJson(u) {
+    var t0 = performance.now();
+    var r = await fetch(u, { headers: { Accept: 'application/json' } });
+    var body = await r.json();
+    return { status: r.status, ms: Math.round(performance.now() - t0), body: body };
+  }
+
+  // ------------------------------------------------------------- state
+  var S = {};
+
+  async function newRun() {
+    var region = document.getElementById('region').value;
+    ['codes', 'names'].forEach(function (n) {
+      var st = document.getElementById('st-' + n); st.textContent = 'loading…'; st.className = 'status';
+    });
+    var codesUrl = url('lists/codes');
+    var namesUrl = url('names/get', { region: region });
+    setEndpoint('codes', codesUrl); setEndpoint('names', namesUrl);
+    try {
+      var res = await Promise.all([getJson(codesUrl), getJson(namesUrl)]);
+      var c = res[0], n = res[1];
+      showResult('codes', c); showResult('names', n);
+      if (c.status !== 200 || n.status !== 200) throw new Error('an example call failed');
+      S.codes = c.body; S.person = n.body;
+      derive();
+      kv(document.getElementById('kv-codes'), ['rand3', 'rand4', 'rand6', 'rand8', 'rand10'].map(function (k) { return [k, S.codes[k]]; }));
+      kv(document.getElementById('kv-names'), [
+        ['region', S.person.region + ' (' + S.person.regionName + ')'],
+        ['female', S.person.femaleFullName], ['male', S.person.maleFullName],
+        ['ascii', S.person.ascii.femaleFullName]]);
+      kv(document.getElementById('kv-derived'), [
+        ['run key', S.key], ['email', S.email], ['inbox', S.inbox], ['sender', S.sender], ['user', S.user], ['mock phone', S.mockNumber]]);
+      render();
+    } catch (e) {
+      document.getElementById('ex-sections').innerHTML = '';
+      var p = el('p', { class: 'note' }, 'Could not reach the API from this page (' + e.message + '). The links on the Overview tab still work.');
+      document.getElementById('ex-sections').appendChild(p);
+    }
+  }
+  function setEndpoint(n, u) { var a = document.getElementById('ep-' + n); a.href = u; a.textContent = u; }
+  function showResult(n, r) {
+    var st = document.getElementById('st-' + n);
+    st.textContent = 'HTTP ' + r.status + ' · ' + r.ms + ' ms';
+    st.className = 'status ' + (r.status === 200 ? 'ok' : 'err');
+    document.getElementById('raw-' + n).textContent = JSON.stringify(r.body, null, 2);
+  }
+  function derive() {
+    var run = S.codes.rand10, low = run.toLowerCase();
+    var first = slug(S.person.ascii.femaleFirstName), last = slug(S.person.ascii.femaleLastName);
+    S.run = run; S.low = low;
+    S.key = 'demo-' + run;
+    S.email = first + '.' + last + '-' + low + '@' + DOMAIN;
+    S.inbox = 'inbox-' + low + '@' + DOMAIN;
+    S.sender = 'sender-' + low + '@' + DOMAIN;
+    S.user = first + '.' + last;
+    S.first = S.person.femaleFirstName;
+    S.code6 = S.codes.rand6;
+    S.perfKey = 'demo-' + run + '-login';
+    S.lockKey = 'account-' + low;
+    S.attKey = 'welcome-' + low + '.txt';
+    S.mockNumber = '049157' + String(parseInt(S.codes.rand6.replace(/\D/g, '').slice(0, 4) || '0', 10) + 1000).slice(-4);
+    S.secret = newSecret();
+    S.otpauth = 'otpauth://totp/TestHelper:' + S.email + '?secret=' + S.secret + '&issuer=TestHelper';
+    S.pageTime = Math.floor(Date.now() / 1000);
+  }
+
+  // ------------------------------------------------------------- the examples
+  // Each example: [label, why, path, params()] - params are rebuilt at click
+  // time so refs typed into a box and time windows are always current.
+  function sections() {
+    return [
+      { id: 'lists', title: 'lists', blurb: 'Shared test-data queues, run variables, counters and a cleanup register. Push a couple of records, then pop them — each record is handed out exactly once.',
+        ex: [
+          ['Push the female persona', 'Every parameter except key becomes a field of the record.', 'lists/push', function () { return { key: S.key, firstName: S.person.femaleFirstName, lastName: S.person.femaleLastName, email: S.email }; }],
+          ['Push the male persona', '', 'lists/push', function () { return { key: S.key, firstName: S.person.maleFirstName, lastName: S.person.maleLastName }; }],
+          ['Pop the next record', 'Click again: record 2, then exhausted:true.', 'lists/pop', function () { return { key: S.key }; }],
+          ['Cyclepop: pop that never runs out', 'Click repeatedly: record 1, 2, then 1 again with pass:2. Same pointer as pop - Reset first if you popped.', 'lists/cyclepop', function () { return { key: S.key }; }],
+          ['A random record', 'Does not consume anything.', 'lists/random', function () { return { key: S.key }; }],
+          ['List the records', '', 'lists/list', function () { return { key: S.key }; }],
+          ['Reset the pop pointer', 'Records are kept; pop starts from 1 again.', 'lists/reset', function () { return { key: S.key }; }],
+          ['Save a run variable', '', 'lists/vars/set', function () { return { key: S.key, name: 'customerEmail', value: S.email }; }],
+          ['Read it back', '404 until you have set it.', 'lists/vars/get', function () { return { key: S.key, name: 'customerEmail' }; }],
+          ['Count an order', 'Atomic; returns the value after the change.', 'lists/counters/add', function () { return { key: S.key, name: 'orders' }; }],
+          ['Read the counter', '', 'lists/counters/get', function () { return { key: S.key, name: 'orders' }; }],
+          ['Register something to delete later', '', 'lists/cleanup/push', function () { return { key: S.key, value: 'CUST-' + S.code6 }; }],
+          ['Hand back the next thing to delete', '', 'lists/cleanup/pop', function () { return { key: S.key }; }],
+          ['Cleanup audit trail', '', 'lists/cleanup/list', function () { return { key: S.key }; }],
+          ['Clear the records', '', 'lists/clear', function () { return { key: S.key }; }],
+          ['CSV / JSON upload page', 'Drag and drop a file to load a key in bulk.', 'lists/upload', function () { return { format: 'csv' }; }]
+        ] },
+      { id: 'names', title: 'names', blurb: 'Realistic female and male personas for 15 regions, with ASCII-folded copies of every name.',
+        ex: [
+          ['This run’s persona again', 'The same seed always gives the same people.', 'names/get', function () { return { region: S.person.region, seed: S.run }; }],
+          ['Japanese names', 'Family name first, flagged familyNameFirst.', 'names/get', function () { return { region: 'JP' }; }],
+          ['Polish names', 'Surnames inflect for women (genderedSurname).', 'names/get', function () { return { region: 'PL' }; }],
+          ['Anywhere but Australia', '', 'names/get', function () { return { notregion: 'AU' }; }],
+          ['All regions', '', 'names/regions', function () { return null; }]
+        ] },
+      { id: 'mail', title: 'mail', blurb: 'Catch email sent to any address @' + DOMAIN + ', send test email, and read or search attachments. Send first, then pop — pop waits up to 20 s for the message to arrive.',
+        ex: [
+          ['Send a verification email', 'Sender and recipient are both on this domain.', 'mail/send', function () { return { from: S.sender, to: S.inbox, subject: 'Welcome ' + S.first, body: 'Hi ' + S.first + ', your verification code is ' + S.code6 + '.' }; }],
+          ['Send one with an 8 KB attachment', 'A generated text file.', 'mail/send', function () { return { from: S.sender, to: S.inbox, subject: 'Your documents', body: 'Attached.', attachmentkb: 8, filename: 'welcome.txt' }; }],
+          ['Pop the next message', 'Holds for up to 20 s until one arrives. Copy attachments[0].ref into the box below.', 'mail/pop', function () { return { address: S.inbox, wait: 20 }; }],
+          ['Rewind the inbox', '', 'mail/reset', function () { return { address: S.inbox }; }],
+          ['Empty the inbox', '', 'mail/clear', function () { return { address: S.inbox }; }]
+        ],
+        ref: { id: 'mailref', label: 'Attachment ref', hint: 'from attachments[0].ref in a pop',
+          fill: async function () {
+            var r = await getJson(url('mail/pop', { address: S.inbox, wait: 20 }));
+            var a = (r.body.attachments || [])[0];
+            if (!a) throw new Error(r.body.exhausted ? 'no message waiting - send the one with an attachment first' : 'that message had no attachment - pop again');
+            return a.ref;
+          },
+          ex: [
+            ['Get the attachment (base64)', '', 'mail/attachments/get', function (ref) { return { ref: ref }; }],
+            ['Open it in the browser', 'view=true redirects to the file itself - a PDF opens in the new tab.', 'mail/attachments/get', function (ref) { return { ref: ref, view: 'true' }; }],
+            ['See the searchable text', 'PDF pages as visual lines, a tab between columns. Add password= for a protected PDF.', 'mail/attachments/text', function (ref) { return { ref: ref, format: 'text' }; }],
+            ['Search inside it', 'Literal text search with context.', 'mail/attachments/find', function (ref) { return { ref: ref, text: 'the', limit: 3 }; }],
+            ['Capture a value between boundaries', 'LoadRunner-style left/right boundaries.', 'mail/attachments/find', function (ref) { return { ref: ref, left: 'the ', right: ' ', limit: 5 }; }],
+            ['Keep it in the saved store', 'Received attachments expire after 7 days; saved ones don’t.', 'mail/attachments/save', function (ref) { return { key: S.attKey, ref: ref }; }],
+            ['Get the saved copy by key', '', 'mail/attachments/get', function () { return { key: S.attKey }; }],
+            ['Delete the saved copy', '', 'mail/attachments/delete', function () { return { key: S.attKey }; }]
+          ] } },
+      { id: 'sms', title: 'sms', blurb: 'Text messages. Real texts come only from registered capture handsets (they post with a secret device key); for any other number, mocksend simulates the text so the read calls work exactly the same - with mocked:true. This run uses the made-up number below.',
+        ex: [
+          ['Simulate a verification text', 'No SMS is sent. The response carries the code to assert.', 'sms/mocksend', function () { return { number: S.mockNumber }; }],
+          ['Read it back', 'The newest message for the number - note mocked:true.', 'sms/get', function () { return { number: S.mockNumber }; }],
+          ['Wait for the next one', 'Open this, then the simulate link above within 20 s.', 'sms/get', function () { return { number: S.mockNumber, wait: 20 }; }],
+          ['A custom message and sender', 'body is a template: {code} is replaced.', 'sms/mocksend', function () { return { number: S.mockNumber, code: S.code6, body: 'Your ' + S.first + ' Bank PIN is {code}', from: 'MyBank' }; }],
+          ['Only genuine texts', 'real=true ignores simulated messages - this one finds nothing.', 'sms/get', function () { return { number: S.mockNumber, real: 'true' }; }],
+          ['Try a real send', 'Refused: the number is not a registered handset. The reply suggests the mocksend call instead.', 'sms/send', function () { return { number: S.mockNumber }; }],
+          ['Everything in the last 10 minutes', 'All numbers, newest first.', 'sms/list', function () { return { seconds: 600 }; }]
+        ] },
+      { id: 'totp', title: 'totp', blurb: 'Authenticator-app codes (RFC 6238) for MFA-protected test accounts. This run has its own random secret - scan it into your phone below and watch the codes match.',
+        ex: [
+          ['Show the enrolment QR code', 'What an app shows at MFA set-up: an otpauth:// URI as a QR code.', 'qr/get', function () { return { text: S.otpauth, format: 'html' }; }],
+          ['Store the secret for the persona', 'What a test does with the secret it read off that screen.', 'totp/set', function () { return { key: S.key, user: S.user, secret: S.secret }; }],
+          ['Get the current code', 'Also nextCode, previousCode and secondsRemaining.', 'totp/get', function () { return { key: S.key, user: S.user }; }],
+          ['Stateless: straight from a secret', 'Nothing is stored.', 'totp/get', function () { return { secret: S.secret }; }],
+          ['8-digit codes', '', 'totp/get', function () { return { secret: S.secret, digits: 8 }; }]
+        ] },
+      { id: 'webhook', title: 'webhook', blurb: 'Give a system under test this receive URL, then read back what it sent. Open the waiting list call first, then the receive call within 20 s.',
+        ex: [
+          ['Wait for a webhook', 'Holds up to 20 s for one received after this page loaded.', 'webhook/list', function () { return { key: S.key, since: S.pageTime, wait: 20 }; }],
+          ['Send one (simulating the system under test)', 'Any method works; the query and headers are captured.', 'webhook/receive', function () { return { key: S.key, event: 'order.paid', orderId: 'SO-' + S.code6 }; }],
+          ['Receive, but answer 503', 'To test the sender’s retry logic.', 'webhook/receive', function () { return { key: S.key, event: 'order.paid', status: 503 }; }],
+          ['List everything received', 'Newest first.', 'webhook/list', function () { return { key: S.key }; }],
+          ['Clear', '', 'webhook/clear', function () { return { key: S.key }; }]
+        ] },
+      { id: 'lock', title: 'lock', blurb: 'Stop two scripts using the same account at once. Open "Acquire" twice: the second says locked:false until the first is released or 60 s pass.',
+        ex: [
+          ['Acquire', 'Returns locked:true with a ref, or locked:false if busy.', 'lock/acquire', function () { return { key: S.lockKey }; }],
+          ['Acquire, waiting up to 20 s', '', 'lock/acquire', function () { return { key: S.lockKey, wait: 20 }; }]
+        ],
+        ref: { id: 'lockref', label: 'Lock ref', hint: 'from ref in an acquire response',
+          fill: async function () {
+            var r = await getJson(url('lock/acquire', { key: S.lockKey }));
+            if (!r.body.locked) throw new Error('lock is busy - it frees within ' + (r.body.freeInSeconds || 60) + ' s');
+            return r.body.ref;
+          },
+          ex: [['Release', 'Only the holder can release.', 'lock/release', function (ref) { return { ref: ref }; }]] } },
+      { id: 'qr', title: 'qr', blurb: 'QR codes as a page, an SVG image, or JSON with a base64 PNG.',
+        ex: [
+          ['As a page', '', 'qr/get', function () { return { text: 'Hello ' + S.first, format: 'html' }; }],
+          ['As an SVG image', 'Usable as an <img src>.', 'qr/get', function () { return { text: 'Hello ' + S.first, format: 'svg' }; }],
+          ['As JSON', 'What a script wants: png (base64) and dataUri.', 'qr/get', function () { return { text: 'Hello ' + S.first }; }],
+          ['An MFA enrolment QR', 'The same QR as in the totp section: scan it with an authenticator app.', 'qr/get', function () { return { text: S.otpauth, format: 'html' }; }]
+        ] },
+      { id: 'perf', title: 'perf', blurb: 'Record response times, then ask for percentiles, a time series, or a pass/fail gate.',
+        ex: [
+          ['Record seven timings', 'Up to 100 comma-separated values per call.', 'perf/add', function () { return { key: S.perfKey, value: '120,135,150,180,95,210,160' }; }],
+          ['Record a failure', 'ok=false feeds errors and errorRate.', 'perf/add', function () { return { key: S.perfKey, value: 900, ok: 'false' }; }],
+          ['Statistics', 'count, mean, stdDev, p50…p99_9, throughput.', 'perf/stats', function () { return { key: S.perfKey, p: '99.5' }; }],
+          ['Time series', 'Per-minute buckets.', 'perf/series', function () { return { key: S.perfKey }; }],
+          ['Gate: p90 under 200 ms', 'pass is true or false; strict=true makes a failure HTTP 412.', 'perf/assert', function () { return { key: S.perfKey, p90lt: 200 }; }],
+          ['Gate on error rate', '', 'perf/assert', function () { return { key: S.perfKey, errorratelt: 0.05 }; }],
+          ['Keys for this run', '', 'perf/keys', function () { return { prefix: 'demo-' + S.run }; }],
+          ['Clear', '', 'perf/clear', function () { return { key: S.perfKey }; }]
+        ] },
+      { id: 'voice', title: 'voice', blurb: 'Spoken utterances for testing voice interfaces. The same request is always the same stored audio, so a test can be replayed on exactly the sound it failed on. Tags in [square brackets] direct the delivery, and the reply says how faithfully each one was rendered.',
+        ex: [
+          ['Hear it', 'play=true returns a page that plays the audio by itself, with no player on screen. (Opened cold, without a click on this site first, a browser holds the sound back and the page shows one Play button.)', 'voice/say', function () { return { text: 'Hello, this is ' + S.first + '. When is my next appointment?', play: 'true' }; }],
+          ['The same words, anxious', 'No AWS voice takes emotion as an instruction yet: this is a faster delivery, and the reply says so.', 'voice/say', function () { return { text: 'Hello, this is ' + S.first + '. When is my next appointment?', emotion: 'anxious', play: 'true' }; }],
+          ['The audio file itself', 'view=true redirects to the file, so the URL works as an <audio src>. In a tab, the browser shows its own player.', 'voice/say', function () { return { text: 'Hello, this is ' + S.first + '. When is my next appointment?', view: 'true' }; }],
+          ['What a script gets', 'ref, durationMs, the audio as base64, and tags[] - one entry per tag with what was really done. Open it twice: cached becomes true.', 'voice/say', function () { return { text: '[anxious] I have been waiting forty minutes. [sighs] Is the doctor running late? [pause 800ms]', format: 'wav' }; }],
+          ['A random voice, repeatable', 'The same seed picks the same voice every time.', 'voice/say', function () { return { text: 'Hello, this is ' + S.first + '.', voice: 'random', seed: S.run, play: 'true' }; }],
+          ['The voices', 'With what each engine can render: pauses, pace, volume, whisper, emotion.', 'voice/voices', function () { return { language: 'en' }; }],
+          ['The tags', '', 'voice/tags', function () { return null; }]
+        ] },
+      { id: 'discovery', title: 'discovery', blurb: 'What an AI assistant reads to learn the API.',
+        ex: [
+          ['Service index', '', '', function () { return null; }],
+          ['Actions for one service', '', 'mail', function () { return null; }],
+          ['LLM guide', '', 'llms.txt', function () { return null; }],
+          ['OpenAPI spec (3.2.1)', 'Every parameter, response schema and error.', 'openapi.json', function () { return null; }],
+          ['OpenAPI spec (3.0.3 copy)', 'For tools that do not read OpenAPI 3.2 yet, e.g. to import into Postman with Import > Link.', 'openapi-3.0.json', function () { return null; }]
+        ] }
+    ];
+  }
+
+  // ------------------------------------------------------------- totp phone check
+  var totpTimer = null;
+  function phonePanel() {
+    var box = el('div', { class: 'phone' });
+    var qrWrap = el('div', { class: 'phone-qr' });
+    var qrUrl = url('qr/get', { text: S.otpauth, format: 'svg', scale: 6 });
+    var img = el('img', { src: qrUrl, alt: 'QR code for the TOTP secret of this run', width: '220', height: '220' });
+    qrWrap.appendChild(img);
+    var qrLink = el('p', { class: 'endpoint' }, 'GET ');
+    var a1 = el('a', { href: qrUrl, target: '_blank', rel: 'noopener' }, qrUrl); qrLink.appendChild(a1);
+    qrWrap.appendChild(qrLink);
+
+    var right = el('div', { class: 'phone-codes' });
+    right.appendChild(el('h3', {}, 'Try it with your phone'));
+    var ol = el('ol', { class: 'steps' });
+    ol.appendChild(el('li', {}, 'Open your authenticator app (Google Authenticator, Microsoft Authenticator, Authy, 1Password…) and add an account by scanning the QR code.'));
+    var li2 = el('li', {}, 'Or type the secret in by hand: ');
+    li2.appendChild(el('code', {}, S.secret));
+    ol.appendChild(li2);
+    ol.appendChild(el('li', {}, 'Compare: the code on your phone should match the one below, changing at the same moment.'));
+    right.appendChild(ol);
+
+    var big = el('div', { class: 'otp', 'aria-live': 'polite' }, '······');
+    var bar = el('div', { class: 'otp-bar' }); var fill = el('div', { class: 'otp-fill' }); bar.appendChild(fill);
+    var meta = el('div', { class: 'muted otp-meta' }, '');
+    var ep = el('p', { class: 'endpoint' }, 'GET ');
+    var getUrl = url('totp/get', { secret: S.secret });
+    var a2 = el('a', { href: getUrl, target: '_blank', rel: 'noopener' }, getUrl); ep.appendChild(a2);
+    right.appendChild(big); right.appendChild(bar); right.appendChild(meta); right.appendChild(ep);
+    box.appendChild(qrWrap); box.appendChild(right);
+
+    // Fetch once per 30 s step (and whenever the step rolls over); count down locally between.
+    var until = 0, period = 30;
+    async function refresh() {
+      try {
+        var r = await getJson(getUrl);
+        if (r.status !== 200) throw new Error('HTTP ' + r.status);
+        var b = r.body;
+        big.textContent = b.code.slice(0, 3) + ' ' + b.code.slice(3);
+        period = b.period;
+        until = Date.now() + b.secondsRemaining * 1000;
+        meta.textContent = 'next ' + b.nextCode + ' · previous ' + b.previousCode + ' · fetched in ' + r.ms + ' ms';
+      } catch (e) { meta.textContent = 'Could not fetch the code: ' + e.message; until = Date.now() + 5000; }
+    }
+    function tick() {
+      if (!document.body.contains(box)) { clearInterval(totpTimer); return; }
+      var left = Math.max(0, (until - Date.now()) / 1000);
+      fill.style.width = (100 * left / period) + '%';
+      if (left <= 0) { until = Date.now() + 60000; refresh(); }
+    }
+    if (totpTimer) clearInterval(totpTimer);
+    refresh();
+    totpTimer = setInterval(tick, 250);
+    return box;
+  }
+
+  function buildUrl(path, params) { return path ? url(path, params) : BASE; }
+
+  function exList(items, refInput) {
+    var ul = el('ul', { class: 'ex' });
+    items.forEach(function (x) {
+      var li = el('li');
+      var head = el('div'); head.appendChild(el('div', { class: 'what' }, x[0]));
+      if (x[1]) head.appendChild(el('div', { class: 'why' }, x[1]));
+      var code = el('div', { class: 'url' });
+      var a = el('a', { class: 'open', target: '_blank', rel: 'noopener' }, 'Open ↗');
+      function current() {
+        var ref = refInput ? refInput.value.trim() : null;
+        return buildUrl(x[2], x[3](ref || 'PASTE_REF_ABOVE'));
+      }
+      function refresh() { var u = current(); code.textContent = 'GET ' + u; a.href = u; }
+      a.addEventListener('click', function (ev) {
+        if (ev.ctrlKey || ev.metaKey || ev.shiftKey || ev.button !== 0) return;
+        ev.preventDefault();
+        if (refInput && !refInput.value.trim()) { refInput.focus(); return; }
+        refresh(); openWin(a.href);
+      });
+      if (refInput) refInput.addEventListener('input', refresh);
+      refresh();
+      var act = el('div', { class: 'actions' }); act.appendChild(a);
+      li.appendChild(head); li.appendChild(act); li.appendChild(code);
+      ul.appendChild(li);
+    });
+    return ul;
+  }
+
+  function render() {
+    var root = document.getElementById('ex-sections');
+    root.textContent = '';
+    sections().forEach(function (sec) {
+      var s = el('section', { class: 'ex-section', id: 'ex-' + sec.id });
+      var h = el('h2'); h.appendChild(el('code', {}, sec.title)); s.appendChild(h);
+      s.appendChild(el('p', { class: 'muted' }, sec.blurb));
+      s.appendChild(exList(sec.ex));
+      if (sec.id === 'totp') s.appendChild(phonePanel());
+      if (sec.ref) {
+        var box = el('div', { class: 'refbox' });
+        var lab = el('label', { for: sec.ref.id }, sec.ref.label);
+        var inp = el('input', { type: 'text', id: sec.ref.id, placeholder: sec.ref.hint, autocomplete: 'off', spellcheck: 'false' });
+        var btn = el('button', { class: 'small', type: 'button' }, 'Get one for me');
+        var msg = el('span', { class: 'muted' });
+        btn.addEventListener('click', async function () {
+          btn.disabled = true; msg.textContent = 'calling…';
+          try { inp.value = await sec.ref.fill(); inp.dispatchEvent(new Event('input')); msg.textContent = ''; }
+          catch (e) { msg.textContent = e.message; }
+          btn.disabled = false;
+        });
+        box.appendChild(lab); box.appendChild(inp); box.appendChild(btn); box.appendChild(msg);
+        s.appendChild(box);
+        s.appendChild(exList(sec.ref.ex, inp));
+      }
+      root.appendChild(s);
+    });
+  }
+
+  document.getElementById('newrun').addEventListener('click', newRun);
+  document.getElementById('region').addEventListener('change', newRun);
+  fromHash();
+})();
+</script>
+</body>
+</html>

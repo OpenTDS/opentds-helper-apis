@@ -1,0 +1,93 @@
+# SPDX-License-Identifier: MIT
+# Copyright (c) 2026 Test Data Services Pty. Ltd.
+#
+# Deploys the stack into YOUR AWS account with short-lived OIDC credentials.
+# One-off setup: scripts/setup-github-deploy.ps1 (see docs/deployment.md).
+#
+# Repository variables (Settings -> Secrets and variables -> Actions):
+#   AWS_ROLE_ARN   required  role created by the setup script
+#   DOMAIN         required  e.g. example.com (public Route 53 zone in the account)
+#   AWS_REGION     optional  default ap-southeast-2 (must support SES receiving)
+#   STACK_NAME     optional  default testhelper-v1
+#   EMAIL_SEND_ALLOWED_DOMAINS / EMAIL_SEND_ALLOWED_TO / SMS_SEND_ALLOWED_NUMBERS
+#                  optional  passed to deploy.ps1 only when set; otherwise the
+#                            deployed stack keeps its current values
+# Environment secret (environment 'aws-deploy'):
+#   SMS_DEVICE_KEYS optional  comma-separated capture-handset keys; unset = sms/receive off
+name: Deploy to AWS
+
+on:
+  workflow_dispatch:
+    inputs:
+      check_only:
+        description: Check only (dry run - report what a deploy would do, change nothing)
+        type: boolean
+        default: true
+  # To deploy on every push to main as well, uncomment:
+  # push:
+  #   branches: [main]
+
+permissions:
+  id-token: write   # lets the job request the OIDC token AWS exchanges for credentials
+  contents: read
+
+concurrency:
+  group: deploy-${{ vars.STACK_NAME || 'testhelper-v1' }}
+  cancel-in-progress: false
+
+jobs:
+  deploy:
+    runs-on: ubuntu-latest
+    environment: aws-deploy
+    timeout-minutes: 60
+    steps:
+      - name: Check repository variables
+        env:
+          AWS_ROLE_ARN: ${{ vars.AWS_ROLE_ARN }}
+          DOMAIN: ${{ vars.DOMAIN }}
+        run: |
+          missing=""
+          [ -n "$AWS_ROLE_ARN" ] || missing="$missing AWS_ROLE_ARN"
+          [ -n "$DOMAIN" ] || missing="$missing DOMAIN"
+          if [ -n "$missing" ]; then
+            echo "::error::Set repository variable(s):$missing - run scripts/setup-github-deploy.ps1 (docs/deployment.md)."
+            exit 1
+          fi
+
+      - uses: actions/checkout@v7
+
+      - uses: actions/setup-python@v7
+        with:
+          python-version: '3.12'
+
+      - name: AWS credentials (OIDC)
+        uses: aws-actions/configure-aws-credentials@v6
+        with:
+          role-to-assume: ${{ vars.AWS_ROLE_ARN }}
+          aws-region: ${{ vars.AWS_REGION || 'ap-southeast-2' }}
+          role-session-name: gha-${{ github.run_id }}
+
+      - name: deploy.ps1
+        shell: pwsh
+        env:
+          DOMAIN: ${{ vars.DOMAIN }}
+          REGION: ${{ vars.AWS_REGION || 'ap-southeast-2' }}
+          STACK_NAME: ${{ vars.STACK_NAME }}
+          EMAIL_SEND_ALLOWED_DOMAINS: ${{ vars.EMAIL_SEND_ALLOWED_DOMAINS }}
+          EMAIL_SEND_ALLOWED_TO: ${{ vars.EMAIL_SEND_ALLOWED_TO }}
+          SMS_SEND_ALLOWED_NUMBERS: ${{ vars.SMS_SEND_ALLOWED_NUMBERS }}
+          SMS_DEVICE_KEYS: ${{ secrets.SMS_DEVICE_KEYS }}
+          CHECK_ONLY: ${{ github.event_name == 'workflow_dispatch' && inputs.check_only }}
+        run: |
+          $a = @{
+            Domain        = $env:DOMAIN
+            Region        = $env:REGION
+            SmsDeviceKeys = "$env:SMS_DEVICE_KEYS"
+            Yes           = $true
+          }
+          if ($env:STACK_NAME)                 { $a.StackName = $env:STACK_NAME }
+          if ($env:EMAIL_SEND_ALLOWED_DOMAINS) { $a.EmailSendAllowedDomains = $env:EMAIL_SEND_ALLOWED_DOMAINS }
+          if ($env:EMAIL_SEND_ALLOWED_TO)      { $a.EmailSendAllowedTo = $env:EMAIL_SEND_ALLOWED_TO }
+          if ($env:SMS_SEND_ALLOWED_NUMBERS)   { $a.SmsSendAllowedNumbers = $env:SMS_SEND_ALLOWED_NUMBERS }
+          if ($env:CHECK_ONLY -eq 'true')      { $a.CheckOnly = $true }
+          ./deploy.ps1 @a

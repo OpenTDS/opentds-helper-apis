@@ -1,0 +1,14 @@
+{
+  "name": "v1-node-tests",
+  "private": true,
+  "description": "Test-only dependencies for the Node.js v1 services. The Lambda runtime provides the AWS SDK v3 in production.",
+  "scripts": {
+    "test": "node --test"
+  },
+  "dependencies": {
+    "@aws-sdk/client-dynamodb": "^3.1141.0",
+    "@aws-sdk/client-lambda": "^3.1141.0",
+    "@aws-sdk/client-s3": "^3.1141.0",
+    "@aws-sdk/lib-dynamodb": "^3.1141.0"
+  }
+}

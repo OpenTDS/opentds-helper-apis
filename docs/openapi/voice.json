@@ -1,0 +1,2522 @@
+{
+ "tag": {
+  "name": "voice",
+  "description": "Spoken utterances for testing voice interfaces: text with [tags] for emotion, pace and pauses becomes audio, stored by content so every request can be replayed byte for byte. Replay stored audio, pin it under a key, or keep a human recording beside it. Speech is Amazon Polly; each response says how faithfully each tag was rendered."
+ },
+ "paths": {
+  "/voice/say": {
+   "get": {
+    "tags": [
+     "voice"
+    ],
+    "operationId": "voiceSay",
+    "summary": "Say text: text (with [tags]) to audio, stored by content",
+    "description": "Turns text into spoken audio, and stores it by content.\n\n**Replay.** The whole request (words, tags, voice, engine, format, sample rate, pronunciations) is reduced to a canonical form and hashed; the hash is `ref` and the audio is stored under it. The same request returns the same audio byte for byte with `cached: true` and nothing is synthesised, so a failing test can be run again on exactly the stimulus it failed on, and a thousand virtual users saying the same words cost one synthesis. Generated audio is kept 30 days after its last use; `voice/save` keeps one for good.\n\n**Tags.** Put ElevenLabs-style tags in square brackets where the delivery should change: `[anxious] I've been waiting. [pause] Is the doctor late?`. Emotions (`[anxious]`, `[angry]`, `[sad]`, `[relaxed]`, ...), pace (`[slowly]`, `[quickly]`), volume (`[softly]`, `[loudly]`, `[whispers]`), pauses (`[pause]`, `[long pause]`, `[pause 800ms]`) and sounds (`[sighs]`, `[laughs]`). A tag holds until the next tag of its kind; `[neutral]` clears them. Tags are never spoken. `voice/tags` lists them all.\n\n**Honest rendering.** No AWS voice takes emotion as an instruction today. Each tag is rendered as well as the chosen engine can and reported in `tags[]`: `native`, `approximated` (a change of rate, pitch or volume), `inferred` (generative voices read emotion from the wording) or `none` (not audible; sounds such as `[sighs]`). With `strict=true` a request with any `none` tag is refused with 422 before anything is synthesised. `ssml` shows exactly what the engine was asked to say.\n\n**The audio** comes back as base64 in `data`; `url=true` gives a presigned URL instead; `view=true` or `download=true` redirect to the audio, so the say URL itself works as an `<audio src>`; `play=true` returns a small page that plays it from script with no player on screen (and one Play button if the browser will not let a page make sound before a click). `format=wav&hz=16000` is the form microphones and speech-to-speech streams take; in `wav` and `pcm`, a pause at the very start or end is exact digital silence.\n\n**POST** takes the same names as a JSON body, plus `segments` (each `{\"text\", \"emotion\"}` or `{\"pause\": ms}`, each starting from the utterance's own emotion) and `pronounce` (`{\"word\": \"how to say it\"}`). A form body (`curl -d 'text=...'`) is read as fields; any other body is taken as the text. A `text` that is a complete `<speak>` document is passed to the engine as written.\n\n**Say it again.** `ref` (or the `key` of a saved utterance) in place of `text` says the stored script again with another `voice`, `engine`, `format` or `hz` - a new ref, the same words and direction.\n\nNew synthesis is capped per day on each deployment (429 with `budgetExhausted` when used up); stored audio is never affected.",
+    "parameters": [
+     {
+      "name": "text",
+      "in": "query",
+      "required": false,
+      "schema": {
+       "type": "string"
+      },
+      "description": "The words to say, with optional [tags]. Up to 3000 characters. Send text or text64.",
+      "example": "When is my next appointment?"
+     },
+     {
+      "name": "text64",
+      "in": "query",
+      "required": false,
+      "schema": {
+       "type": "string"
+      },
+      "description": "Base64 of the text (standard or URL-safe alphabet, padding optional). Use it when the text has + & % # or brackets your client will not encode.",
+      "example": "W2FueGlvdXNdIElzIHRoZSBkb2N0b3IgcnVubmluZyBsYXRlPw"
+     },
+     {
+      "name": "emotion",
+      "in": "query",
+      "required": false,
+      "schema": {
+       "type": "string"
+      },
+      "description": "One emotion word for the whole utterance: the same as that tag at the very start. voice/tags lists them.",
+      "example": "anxious"
+     },
+     {
+      "name": "voice",
+      "in": "query",
+      "required": false,
+      "schema": {
+       "type": "string"
+      },
+      "description": "A voice name (voice/voices lists them), or random. Default: the deployment's voice (Olivia, Australian English). If that voice is not available on the engine asked for, the first voice by name in the same language is used.",
+      "example": "Olivia"
+     },
+     {
+      "name": "language",
+      "in": "query",
+      "required": false,
+      "schema": {
+       "type": "string"
+      },
+      "description": "A language code (en-GB) or a language on its own (en). Chooses the voice when voice is not given, and narrows voice=random.",
+      "example": "en-AU"
+     },
+     {
+      "name": "engine",
+      "in": "query",
+      "required": false,
+      "schema": {
+       "type": "string",
+       "enum": [
+        "standard",
+        "neural",
+        "generative"
+       ]
+      },
+      "description": "standard, neural (the default) or generative. Neural is stable and takes rate and volume; standard also takes pitch and a true whisper but sounds synthetic; generative sounds the most human, reads emotion from the wording and cannot be directed.",
+      "example": "neural"
+     },
+     {
+      "name": "format",
+      "in": "query",
+      "required": false,
+      "schema": {
+       "type": "string",
+       "enum": [
+        "mp3",
+        "ogg",
+        "wav",
+        "pcm",
+        "mulaw",
+        "alaw"
+       ],
+       "default": "mp3"
+      },
+      "description": "mp3 (default), ogg, wav, pcm (raw 16-bit mono), mulaw or alaw.",
+      "example": "wav"
+     },
+     {
+      "name": "hz",
+      "in": "query",
+      "required": false,
+      "schema": {
+       "type": "integer"
+      },
+      "description": "Sample rate. mp3/ogg: 8000, 16000, 22050 or 24000 (default 24000; 22050 for standard voices). wav/pcm: 8000 or 16000 (default 16000). mulaw/alaw: 8000.",
+      "example": 16000
+     },
+     {
+      "name": "seed",
+      "in": "query",
+      "required": false,
+      "schema": {
+       "type": "string"
+      },
+      "description": "With voice=random: makes the choice of voice repeatable.",
+      "example": "run42"
+     },
+     {
+      "name": "strict",
+      "in": "query",
+      "required": false,
+      "schema": {
+       "type": "boolean",
+       "default": false
+      },
+      "description": "true: refuse (422) if any tag would not be heard on this engine, instead of leaving it out.",
+      "example": false
+     },
+     {
+      "name": "url",
+      "in": "query",
+      "required": false,
+      "schema": {
+       "type": "boolean",
+       "default": false
+      },
+      "description": "true: return a presigned URL instead of base64 data.",
+      "example": false
+     },
+     {
+      "name": "view",
+      "in": "query",
+      "required": false,
+      "schema": {
+       "type": "boolean",
+       "default": false
+      },
+      "description": "true: answer with a redirect to the audio, played in the browser.",
+      "example": false
+     },
+     {
+      "name": "download",
+      "in": "query",
+      "required": false,
+      "schema": {
+       "type": "boolean",
+       "default": false
+      },
+      "description": "true: answer with a redirect to the audio, saved as a file.",
+      "example": false
+     },
+     {
+      "name": "play",
+      "in": "query",
+      "required": false,
+      "schema": {
+       "type": "boolean",
+       "default": false
+      },
+      "description": "true: answer with a small HTML page that plays the audio from script, with no player on screen. A browser only lets a page make sound once the visitor has clicked something on the site, so when it refuses the page shows one Play button. Not combined with view or download.",
+      "example": false
+     },
+     {
+      "name": "ref",
+      "in": "query",
+      "required": false,
+      "schema": {
+       "type": "string"
+      },
+      "description": "In place of text: say this stored utterance again, with whichever of voice, language, engine, format, hz you pass.",
+      "example": "v7k2m9q4x1ab"
+     },
+     {
+      "name": "key",
+      "in": "query",
+      "required": false,
+      "schema": {
+       "type": "string"
+      },
+      "description": "In place of text: say this saved utterance again (not an uploaded recording).",
+      "example": "greeting.relaxed"
+     }
+    ],
+    "responses": {
+     "200": {
+      "description": "The utterance, with its audio (data or url). With play=true, an HTML page that plays it.",
+      "content": {
+       "application/json": {
+        "schema": {
+         "type": "object",
+         "required": [
+          "ref",
+          "cached",
+          "text",
+          "voice",
+          "language",
+          "engine",
+          "format",
+          "hz",
+          "bytes",
+          "tags",
+          "ssml",
+          "filename",
+          "contentType",
+          "createdTime",
+          "getUrl"
+         ],
+         "properties": {
+          "ref": {
+           "type": "string",
+           "description": "Handle for this exact audio. Pass it to voice/get to replay it, or voice/save to keep it."
+          },
+          "cached": {
+           "type": "boolean",
+           "description": "true: served from the store, nothing was synthesised."
+          },
+          "text": {
+           "type": "string",
+           "description": "The words spoken, with the tags removed: the transcript to expect."
+          },
+          "voice": {
+           "type": "string"
+          },
+          "language": {
+           "type": "string"
+          },
+          "engine": {
+           "type": "string",
+           "enum": [
+            "standard",
+            "neural",
+            "generative"
+           ]
+          },
+          "format": {
+           "type": "string"
+          },
+          "hz": {
+           "type": "integer",
+           "description": "Sample rate."
+          },
+          "bytes": {
+           "type": "integer"
+          },
+          "durationMs": {
+           "type": "integer",
+           "description": "Length of the audio, read from the audio itself."
+          },
+          "characters": {
+           "type": "integer",
+           "description": "Characters billed by the speech engine."
+          },
+          "tags": {
+           "type": "array",
+           "items": {
+            "type": "object",
+            "required": [
+             "tag",
+             "kind",
+             "at",
+             "rendered",
+             "how"
+            ],
+            "properties": {
+             "tag": {
+              "type": "string",
+              "description": "The tag as written, lower case."
+             },
+             "kind": {
+              "type": "string",
+              "enum": [
+               "emotion",
+               "pace",
+               "volume",
+               "pause",
+               "reset",
+               "sound",
+               "accent",
+               "unknown"
+              ]
+             },
+             "at": {
+              "type": "integer",
+              "description": "Characters of spoken text before the tag."
+             },
+             "rendered": {
+              "type": "string",
+              "enum": [
+               "native",
+               "approximated",
+               "inferred",
+               "none"
+              ],
+              "description": "native: the engine did exactly this. approximated: the nearest thing it has. inferred: left to the engine, which reads emotion from the wording. none: not audible in this audio."
+             },
+             "how": {
+              "type": "string",
+              "description": "What was actually done, e.g. \"rate 112%\"."
+             }
+            }
+           },
+           "description": "One entry per tag, in order: what the engine did with it."
+          },
+          "ssml": {
+           "type": "string",
+           "description": "Exactly what was sent to the speech engine."
+          },
+          "filename": {
+           "type": "string"
+          },
+          "contentType": {
+           "type": "string"
+          },
+          "createdTime": {
+           "type": "integer",
+           "description": "When the audio was generated, UTC epoch seconds."
+          },
+          "getUrl": {
+           "type": "string",
+           "description": "Ready-made voice/get URL for this audio."
+          },
+          "seed": {
+           "type": "string",
+           "nullable": true,
+           "description": "Present with voice=random: the seed that chose the voice (null = unseeded)."
+          },
+          "data": {
+           "type": "string",
+           "description": "The audio, base64. Absent when url is returned."
+          },
+          "url": {
+           "type": "string",
+           "description": "Presigned URL for the audio (url=true, or audio over 4096 KB)."
+          },
+          "expiresInSeconds": {
+           "type": "integer"
+          }
+         }
+        },
+        "example": {
+         "ref": "vyohg19bkdkm",
+         "cached": false,
+         "text": "I've been waiting forty minutes. Is the doctor running late?",
+         "voice": "Olivia",
+         "language": "en-AU",
+         "engine": "neural",
+         "format": "wav",
+         "hz": 16000,
+         "bytes": 148524,
+         "durationMs": 4640,
+         "characters": 60,
+         "tags": [
+          {
+           "tag": "anxious",
+           "kind": "emotion",
+           "at": 0,
+           "rendered": "approximated",
+           "how": "rate 112%"
+          },
+          {
+           "tag": "sighs",
+           "kind": "sound",
+           "at": 32,
+           "rendered": "none",
+           "how": "no AWS voice makes this sound yet; kept in the stored script"
+          }
+         ],
+         "ssml": "<speak><prosody rate=\"112%\">I've been waiting forty minutes. Is the doctor running late?</prosody></speak>",
+         "filename": "vyohg19bkdkm.wav",
+         "contentType": "audio/wav",
+         "createdTime": 1794611725,
+         "getUrl": "https://api.example.com/v1/voice/get?ref=vyohg19bkdkm",
+         "data": "UklGRqQ+AABXQVZFZm10IBAA..."
+        }
+       },
+       "text/html": {
+        "schema": {
+         "type": "string"
+        },
+        "example": "<!doctype html>...<p class=\"said\">Hello Paul</p>...<script nonce=\"...\">...new Audio()...</script></html>"
+       }
+      }
+     },
+     "302": {
+      "description": "view=true or download=true: redirect (Location header) to the audio itself.",
+      "headers": {
+       "Location": {
+        "description": "A presigned URL for the audio, valid for a few minutes: played in the browser for view=true, saved for download=true.",
+        "schema": {
+         "type": "string",
+         "format": "uri"
+        }
+       }
+      }
+     },
+     "400": {
+      "$ref": "#/components/responses/Error"
+     },
+     "403": {
+      "$ref": "#/components/responses/Error"
+     },
+     "404": {
+      "$ref": "#/components/responses/Error"
+     },
+     "422": {
+      "description": "strict=true and at least one tag would not be heard. Nothing was synthesised.",
+      "content": {
+       "application/json": {
+        "schema": {
+         "allOf": [
+          {
+           "$ref": "#/components/schemas/Error"
+          },
+          {
+           "type": "object",
+           "properties": {
+            "tags": {
+             "type": "array",
+             "items": {
+              "type": "object",
+              "required": [
+               "tag",
+               "kind",
+               "at",
+               "rendered",
+               "how"
+              ],
+              "properties": {
+               "tag": {
+                "type": "string",
+                "description": "The tag as written, lower case."
+               },
+               "kind": {
+                "type": "string",
+                "enum": [
+                 "emotion",
+                 "pace",
+                 "volume",
+                 "pause",
+                 "reset",
+                 "sound",
+                 "accent",
+                 "unknown"
+                ]
+               },
+               "at": {
+                "type": "integer",
+                "description": "Characters of spoken text before the tag."
+               },
+               "rendered": {
+                "type": "string",
+                "enum": [
+                 "native",
+                 "approximated",
+                 "inferred",
+                 "none"
+                ],
+                "description": "native: the engine did exactly this. approximated: the nearest thing it has. inferred: left to the engine, which reads emotion from the wording. none: not audible in this audio."
+               },
+               "how": {
+                "type": "string",
+                "description": "What was actually done, e.g. \"rate 112%\"."
+               }
+              }
+             }
+            },
+            "engine": {
+             "type": "string"
+            }
+           }
+          }
+         ]
+        },
+        "example": {
+         "error": "strict: 1 tag(s) would not be heard on the 'neural' engine.",
+         "status": 422,
+         "tags": [
+          {
+           "tag": "sighs",
+           "kind": "sound",
+           "at": 32,
+           "rendered": "none",
+           "how": "no AWS voice makes this sound yet; kept in the stored script"
+          }
+         ],
+         "engine": "neural",
+         "hint": "drop strict, remove those tags, or see voice/tags for an engine that renders them"
+        }
+       }
+      }
+     },
+     "429": {
+      "description": "Today's synthesis budget is used up (budgetExhausted), or the speech engine is throttling. Stored audio still works.",
+      "content": {
+       "application/json": {
+        "schema": {
+         "allOf": [
+          {
+           "$ref": "#/components/schemas/Error"
+          },
+          {
+           "type": "object",
+           "properties": {
+            "budgetExhausted": {
+             "type": "boolean"
+            },
+            "dailyCharacters": {
+             "type": "integer"
+            },
+            "retryAfterSeconds": {
+             "type": "integer"
+            }
+           }
+          }
+         ]
+        },
+        "example": {
+         "error": "Today's speech synthesis budget is used up. Utterances already generated (the same request again, or voice/get) still work.",
+         "status": 429,
+         "budgetExhausted": true,
+         "dailyCharacters": 25000,
+         "retryAfterSeconds": 41327
+        }
+       }
+      }
+     },
+     "502": {
+      "description": "The speech engine could not produce the audio. Nothing was stored or counted.",
+      "content": {
+       "application/json": {
+        "schema": {
+         "allOf": [
+          {
+           "$ref": "#/components/schemas/Error"
+          },
+          {
+           "type": "object",
+           "properties": {
+            "detail": {
+             "type": "string"
+            },
+            "region": {
+             "type": "string"
+            }
+           }
+          }
+         ]
+        }
+       }
+      }
+     }
+    }
+   },
+   "post": {
+    "tags": [
+     "voice"
+    ],
+    "operationId": "voiceSayPost",
+    "summary": "Say text from a JSON body: segments, pronunciations, strict",
+    "description": "Turns text into spoken audio, and stores it by content.\n\n**Replay.** The whole request (words, tags, voice, engine, format, sample rate, pronunciations) is reduced to a canonical form and hashed; the hash is `ref` and the audio is stored under it. The same request returns the same audio byte for byte with `cached: true` and nothing is synthesised, so a failing test can be run again on exactly the stimulus it failed on, and a thousand virtual users saying the same words cost one synthesis. Generated audio is kept 30 days after its last use; `voice/save` keeps one for good.\n\n**Tags.** Put ElevenLabs-style tags in square brackets where the delivery should change: `[anxious] I've been waiting. [pause] Is the doctor late?`. Emotions (`[anxious]`, `[angry]`, `[sad]`, `[relaxed]`, ...), pace (`[slowly]`, `[quickly]`), volume (`[softly]`, `[loudly]`, `[whispers]`), pauses (`[pause]`, `[long pause]`, `[pause 800ms]`) and sounds (`[sighs]`, `[laughs]`). A tag holds until the next tag of its kind; `[neutral]` clears them. Tags are never spoken. `voice/tags` lists them all.\n\n**Honest rendering.** No AWS voice takes emotion as an instruction today. Each tag is rendered as well as the chosen engine can and reported in `tags[]`: `native`, `approximated` (a change of rate, pitch or volume), `inferred` (generative voices read emotion from the wording) or `none` (not audible; sounds such as `[sighs]`). With `strict=true` a request with any `none` tag is refused with 422 before anything is synthesised. `ssml` shows exactly what the engine was asked to say.\n\n**The audio** comes back as base64 in `data`; `url=true` gives a presigned URL instead; `view=true` or `download=true` redirect to the audio, so the say URL itself works as an `<audio src>`; `play=true` returns a small page that plays it from script with no player on screen (and one Play button if the browser will not let a page make sound before a click). `format=wav&hz=16000` is the form microphones and speech-to-speech streams take; in `wav` and `pcm`, a pause at the very start or end is exact digital silence.\n\n**POST** takes the same names as a JSON body, plus `segments` (each `{\"text\", \"emotion\"}` or `{\"pause\": ms}`, each starting from the utterance's own emotion) and `pronounce` (`{\"word\": \"how to say it\"}`). A form body (`curl -d 'text=...'`) is read as fields; any other body is taken as the text. A `text` that is a complete `<speak>` document is passed to the engine as written.\n\n**Say it again.** `ref` (or the `key` of a saved utterance) in place of `text` says the stored script again with another `voice`, `engine`, `format` or `hz` - a new ref, the same words and direction.\n\nNew synthesis is capped per day on each deployment (429 with `budgetExhausted` when used up); stored audio is never affected.",
+    "parameters": [
+     {
+      "name": "text",
+      "in": "query",
+      "required": false,
+      "schema": {
+       "type": "string"
+      },
+      "description": "The words to say, with optional [tags]. Up to 3000 characters. Send text or text64.",
+      "example": "When is my next appointment?"
+     },
+     {
+      "name": "text64",
+      "in": "query",
+      "required": false,
+      "schema": {
+       "type": "string"
+      },
+      "description": "Base64 of the text (standard or URL-safe alphabet, padding optional). Use it when the text has + & % # or brackets your client will not encode.",
+      "example": "W2FueGlvdXNdIElzIHRoZSBkb2N0b3IgcnVubmluZyBsYXRlPw"
+     },
+     {
+      "name": "emotion",
+      "in": "query",
+      "required": false,
+      "schema": {
+       "type": "string"
+      },
+      "description": "One emotion word for the whole utterance: the same as that tag at the very start. voice/tags lists them.",
+      "example": "anxious"
+     },
+     {
+      "name": "voice",
+      "in": "query",
+      "required": false,
+      "schema": {
+       "type": "string"
+      },
+      "description": "A voice name (voice/voices lists them), or random. Default: the deployment's voice (Olivia, Australian English). If that voice is not available on the engine asked for, the first voice by name in the same language is used.",
+      "example": "Olivia"
+     },
+     {
+      "name": "language",
+      "in": "query",
+      "required": false,
+      "schema": {
+       "type": "string"
+      },
+      "description": "A language code (en-GB) or a language on its own (en). Chooses the voice when voice is not given, and narrows voice=random.",
+      "example": "en-AU"
+     },
+     {
+      "name": "engine",
+      "in": "query",
+      "required": false,
+      "schema": {
+       "type": "string",
+       "enum": [
+        "standard",
+        "neural",
+        "generative"
+       ]
+      },
+      "description": "standard, neural (the default) or generative. Neural is stable and takes rate and volume; standard also takes pitch and a true whisper but sounds synthetic; generative sounds the most human, reads emotion from the wording and cannot be directed.",
+      "example": "neural"
+     },
+     {
+      "name": "format",
+      "in": "query",
+      "required": false,
+      "schema": {
+       "type": "string",
+       "enum": [
+        "mp3",
+        "ogg",
+        "wav",
+        "pcm",
+        "mulaw",
+        "alaw"
+       ],
+       "default": "mp3"
+      },
+      "description": "mp3 (default), ogg, wav, pcm (raw 16-bit mono), mulaw or alaw.",
+      "example": "wav"
+     },
+     {
+      "name": "hz",
+      "in": "query",
+      "required": false,
+      "schema": {
+       "type": "integer"
+      },
+      "description": "Sample rate. mp3/ogg: 8000, 16000, 22050 or 24000 (default 24000; 22050 for standard voices). wav/pcm: 8000 or 16000 (default 16000). mulaw/alaw: 8000.",
+      "example": 16000
+     },
+     {
+      "name": "seed",
+      "in": "query",
+      "required": false,
+      "schema": {
+       "type": "string"
+      },
+      "description": "With voice=random: makes the choice of voice repeatable.",
+      "example": "run42"
+     },
+     {
+      "name": "strict",
+      "in": "query",
+      "required": false,
+      "schema": {
+       "type": "boolean",
+       "default": false
+      },
+      "description": "true: refuse (422) if any tag would not be heard on this engine, instead of leaving it out.",
+      "example": false
+     },
+     {
+      "name": "url",
+      "in": "query",
+      "required": false,
+      "schema": {
+       "type": "boolean",
+       "default": false
+      },
+      "description": "true: return a presigned URL instead of base64 data.",
+      "example": false
+     },
+     {
+      "name": "view",
+      "in": "query",
+      "required": false,
+      "schema": {
+       "type": "boolean",
+       "default": false
+      },
+      "description": "true: answer with a redirect to the audio, played in the browser.",
+      "example": false
+     },
+     {
+      "name": "download",
+      "in": "query",
+      "required": false,
+      "schema": {
+       "type": "boolean",
+       "default": false
+      },
+      "description": "true: answer with a redirect to the audio, saved as a file.",
+      "example": false
+     },
+     {
+      "name": "play",
+      "in": "query",
+      "required": false,
+      "schema": {
+       "type": "boolean",
+       "default": false
+      },
+      "description": "true: answer with a small HTML page that plays the audio from script, with no player on screen. A browser only lets a page make sound once the visitor has clicked something on the site, so when it refuses the page shows one Play button. Not combined with view or download.",
+      "example": false
+     },
+     {
+      "name": "ref",
+      "in": "query",
+      "required": false,
+      "schema": {
+       "type": "string"
+      },
+      "description": "In place of text: say this stored utterance again, with whichever of voice, language, engine, format, hz you pass.",
+      "example": "v7k2m9q4x1ab"
+     },
+     {
+      "name": "key",
+      "in": "query",
+      "required": false,
+      "schema": {
+       "type": "string"
+      },
+      "description": "In place of text: say this saved utterance again (not an uploaded recording).",
+      "example": "greeting.relaxed"
+     }
+    ],
+    "requestBody": {
+     "required": true,
+     "content": {
+      "application/json": {
+       "schema": {
+        "type": "object",
+        "properties": {
+         "text": {
+          "type": "string",
+          "description": "The words to say, with optional [tags]; or a complete <speak> document."
+         },
+         "segments": {
+          "type": "array",
+          "description": "Instead of text: the utterance in pieces. Each piece starts from the utterance's own emotion.",
+          "items": {
+           "type": "object",
+           "properties": {
+            "text": {
+             "type": "string",
+             "description": "Words for this piece; may contain [tags]."
+            },
+            "emotion": {
+             "type": "string",
+             "description": "Emotion for this piece."
+            },
+            "pause": {
+             "type": "integer",
+             "description": "Instead of text: milliseconds of silence (up to 10000)."
+            }
+           }
+          }
+         },
+         "emotion": {
+          "type": "string",
+          "description": "Emotion for the whole utterance."
+         },
+         "pronounce": {
+          "type": "object",
+          "additionalProperties": {
+           "type": "string"
+          },
+          "description": "Word or phrase -> how to say it. Whole words, any case. Up to 50."
+         },
+         "voice": {
+          "type": "string"
+         },
+         "language": {
+          "type": "string"
+         },
+         "engine": {
+          "type": "string"
+         },
+         "format": {
+          "type": "string"
+         },
+         "hz": {
+          "type": "integer"
+         },
+         "seed": {
+          "type": "string"
+         },
+         "strict": {
+          "type": "boolean"
+         },
+         "url": {
+          "type": "boolean"
+         },
+         "play": {
+          "type": "boolean"
+         },
+         "ref": {
+          "type": "string",
+          "description": "In place of text or segments: a stored utterance to say again."
+         },
+         "key": {
+          "type": "string",
+          "description": "In place of text or segments: a saved utterance to say again."
+         }
+        }
+       },
+       "example": {
+        "voice": "Olivia",
+        "format": "wav",
+        "hz": 16000,
+        "strict": true,
+        "pronounce": {
+         "ACME": "ack me"
+        },
+        "segments": [
+         {
+          "text": "Hi, it's Jo from ACME.",
+          "emotion": "relaxed"
+         },
+         {
+          "pause": 600
+         },
+         {
+          "text": "Actually, I'm quite worried about my results.",
+          "emotion": "anxious"
+         }
+        ]
+       }
+      },
+      "text/plain": {
+       "schema": {
+        "type": "string"
+       },
+       "example": "[anxious] Is the doctor running late? [pause 800ms]"
+      }
+     }
+    },
+    "responses": {
+     "200": {
+      "description": "The utterance, with its audio (data or url). With play=true, an HTML page that plays it.",
+      "content": {
+       "application/json": {
+        "schema": {
+         "type": "object",
+         "required": [
+          "ref",
+          "cached",
+          "text",
+          "voice",
+          "language",
+          "engine",
+          "format",
+          "hz",
+          "bytes",
+          "tags",
+          "ssml",
+          "filename",
+          "contentType",
+          "createdTime",
+          "getUrl"
+         ],
+         "properties": {
+          "ref": {
+           "type": "string",
+           "description": "Handle for this exact audio. Pass it to voice/get to replay it, or voice/save to keep it."
+          },
+          "cached": {
+           "type": "boolean",
+           "description": "true: served from the store, nothing was synthesised."
+          },
+          "text": {
+           "type": "string",
+           "description": "The words spoken, with the tags removed: the transcript to expect."
+          },
+          "voice": {
+           "type": "string"
+          },
+          "language": {
+           "type": "string"
+          },
+          "engine": {
+           "type": "string",
+           "enum": [
+            "standard",
+            "neural",
+            "generative"
+           ]
+          },
+          "format": {
+           "type": "string"
+          },
+          "hz": {
+           "type": "integer",
+           "description": "Sample rate."
+          },
+          "bytes": {
+           "type": "integer"
+          },
+          "durationMs": {
+           "type": "integer",
+           "description": "Length of the audio, read from the audio itself."
+          },
+          "characters": {
+           "type": "integer",
+           "description": "Characters billed by the speech engine."
+          },
+          "tags": {
+           "type": "array",
+           "items": {
+            "type": "object",
+            "required": [
+             "tag",
+             "kind",
+             "at",
+             "rendered",
+             "how"
+            ],
+            "properties": {
+             "tag": {
+              "type": "string",
+              "description": "The tag as written, lower case."
+             },
+             "kind": {
+              "type": "string",
+              "enum": [
+               "emotion",
+               "pace",
+               "volume",
+               "pause",
+               "reset",
+               "sound",
+               "accent",
+               "unknown"
+              ]
+             },
+             "at": {
+              "type": "integer",
+              "description": "Characters of spoken text before the tag."
+             },
+             "rendered": {
+              "type": "string",
+              "enum": [
+               "native",
+               "approximated",
+               "inferred",
+               "none"
+              ],
+              "description": "native: the engine did exactly this. approximated: the nearest thing it has. inferred: left to the engine, which reads emotion from the wording. none: not audible in this audio."
+             },
+             "how": {
+              "type": "string",
+              "description": "What was actually done, e.g. \"rate 112%\"."
+             }
+            }
+           },
+           "description": "One entry per tag, in order: what the engine did with it."
+          },
+          "ssml": {
+           "type": "string",
+           "description": "Exactly what was sent to the speech engine."
+          },
+          "filename": {
+           "type": "string"
+          },
+          "contentType": {
+           "type": "string"
+          },
+          "createdTime": {
+           "type": "integer",
+           "description": "When the audio was generated, UTC epoch seconds."
+          },
+          "getUrl": {
+           "type": "string",
+           "description": "Ready-made voice/get URL for this audio."
+          },
+          "seed": {
+           "type": "string",
+           "nullable": true,
+           "description": "Present with voice=random: the seed that chose the voice (null = unseeded)."
+          },
+          "data": {
+           "type": "string",
+           "description": "The audio, base64. Absent when url is returned."
+          },
+          "url": {
+           "type": "string",
+           "description": "Presigned URL for the audio (url=true, or audio over 4096 KB)."
+          },
+          "expiresInSeconds": {
+           "type": "integer"
+          }
+         }
+        },
+        "example": {
+         "ref": "vyohg19bkdkm",
+         "cached": false,
+         "text": "I've been waiting forty minutes. Is the doctor running late?",
+         "voice": "Olivia",
+         "language": "en-AU",
+         "engine": "neural",
+         "format": "wav",
+         "hz": 16000,
+         "bytes": 148524,
+         "durationMs": 4640,
+         "characters": 60,
+         "tags": [
+          {
+           "tag": "anxious",
+           "kind": "emotion",
+           "at": 0,
+           "rendered": "approximated",
+           "how": "rate 112%"
+          },
+          {
+           "tag": "sighs",
+           "kind": "sound",
+           "at": 32,
+           "rendered": "none",
+           "how": "no AWS voice makes this sound yet; kept in the stored script"
+          }
+         ],
+         "ssml": "<speak><prosody rate=\"112%\">I've been waiting forty minutes. Is the doctor running late?</prosody></speak>",
+         "filename": "vyohg19bkdkm.wav",
+         "contentType": "audio/wav",
+         "createdTime": 1794611725,
+         "getUrl": "https://api.example.com/v1/voice/get?ref=vyohg19bkdkm",
+         "data": "UklGRqQ+AABXQVZFZm10IBAA..."
+        }
+       },
+       "text/html": {
+        "schema": {
+         "type": "string"
+        },
+        "example": "<!doctype html>...<p class=\"said\">Hello Paul</p>...<script nonce=\"...\">...new Audio()...</script></html>"
+       }
+      }
+     },
+     "302": {
+      "description": "view=true or download=true: redirect (Location header) to the audio itself.",
+      "headers": {
+       "Location": {
+        "description": "A presigned URL for the audio, valid for a few minutes: played in the browser for view=true, saved for download=true.",
+        "schema": {
+         "type": "string",
+         "format": "uri"
+        }
+       }
+      }
+     },
+     "400": {
+      "$ref": "#/components/responses/Error"
+     },
+     "403": {
+      "$ref": "#/components/responses/Error"
+     },
+     "404": {
+      "$ref": "#/components/responses/Error"
+     },
+     "422": {
+      "description": "strict=true and at least one tag would not be heard. Nothing was synthesised.",
+      "content": {
+       "application/json": {
+        "schema": {
+         "allOf": [
+          {
+           "$ref": "#/components/schemas/Error"
+          },
+          {
+           "type": "object",
+           "properties": {
+            "tags": {
+             "type": "array",
+             "items": {
+              "type": "object",
+              "required": [
+               "tag",
+               "kind",
+               "at",
+               "rendered",
+               "how"
+              ],
+              "properties": {
+               "tag": {
+                "type": "string",
+                "description": "The tag as written, lower case."
+               },
+               "kind": {
+                "type": "string",
+                "enum": [
+                 "emotion",
+                 "pace",
+                 "volume",
+                 "pause",
+                 "reset",
+                 "sound",
+                 "accent",
+                 "unknown"
+                ]
+               },
+               "at": {
+                "type": "integer",
+                "description": "Characters of spoken text before the tag."
+               },
+               "rendered": {
+                "type": "string",
+                "enum": [
+                 "native",
+                 "approximated",
+                 "inferred",
+                 "none"
+                ],
+                "description": "native: the engine did exactly this. approximated: the nearest thing it has. inferred: left to the engine, which reads emotion from the wording. none: not audible in this audio."
+               },
+               "how": {
+                "type": "string",
+                "description": "What was actually done, e.g. \"rate 112%\"."
+               }
+              }
+             }
+            },
+            "engine": {
+             "type": "string"
+            }
+           }
+          }
+         ]
+        },
+        "example": {
+         "error": "strict: 1 tag(s) would not be heard on the 'neural' engine.",
+         "status": 422,
+         "tags": [
+          {
+           "tag": "sighs",
+           "kind": "sound",
+           "at": 32,
+           "rendered": "none",
+           "how": "no AWS voice makes this sound yet; kept in the stored script"
+          }
+         ],
+         "engine": "neural",
+         "hint": "drop strict, remove those tags, or see voice/tags for an engine that renders them"
+        }
+       }
+      }
+     },
+     "429": {
+      "description": "Today's synthesis budget is used up (budgetExhausted), or the speech engine is throttling. Stored audio still works.",
+      "content": {
+       "application/json": {
+        "schema": {
+         "allOf": [
+          {
+           "$ref": "#/components/schemas/Error"
+          },
+          {
+           "type": "object",
+           "properties": {
+            "budgetExhausted": {
+             "type": "boolean"
+            },
+            "dailyCharacters": {
+             "type": "integer"
+            },
+            "retryAfterSeconds": {
+             "type": "integer"
+            }
+           }
+          }
+         ]
+        },
+        "example": {
+         "error": "Today's speech synthesis budget is used up. Utterances already generated (the same request again, or voice/get) still work.",
+         "status": 429,
+         "budgetExhausted": true,
+         "dailyCharacters": 25000,
+         "retryAfterSeconds": 41327
+        }
+       }
+      }
+     },
+     "502": {
+      "description": "The speech engine could not produce the audio. Nothing was stored or counted.",
+      "content": {
+       "application/json": {
+        "schema": {
+         "allOf": [
+          {
+           "$ref": "#/components/schemas/Error"
+          },
+          {
+           "type": "object",
+           "properties": {
+            "detail": {
+             "type": "string"
+            },
+            "region": {
+             "type": "string"
+            }
+           }
+          }
+         ]
+        }
+       }
+      }
+     }
+    }
+   }
+  },
+  "/voice/get": {
+   "get": {
+    "tags": [
+     "voice"
+    ],
+    "operationId": "voiceGet",
+    "summary": "Stored audio by ref or key (replay; nothing is synthesised)",
+    "description": "Returns stored audio and everything known about it. `ref` finds a generated utterance (kept 30 days after its last use - getting it counts as use); `key` finds saved audio (kept until deleted). No speech engine is involved, so the bytes are the ones first generated or uploaded, every time.\n\nServed the way mail/attachments/get serves a file: base64 in `data`; `url=true` for a presigned URL; `view=true` or `download=true` for a redirect a browser can follow; `play=true` for a small page that plays it from script, with no player on screen.",
+    "parameters": [
+     {
+      "name": "ref",
+      "in": "query",
+      "required": false,
+      "schema": {
+       "type": "string"
+      },
+      "description": "A ref returned by voice/say. Send ref or key.",
+      "example": "v7k2m9q4x1ab"
+     },
+     {
+      "name": "key",
+      "in": "query",
+      "required": false,
+      "schema": {
+       "type": "string"
+      },
+      "description": "A key audio was saved under with voice/save. Send ref or key.",
+      "example": "anxious.waiting"
+     },
+     {
+      "name": "url",
+      "in": "query",
+      "required": false,
+      "schema": {
+       "type": "boolean",
+       "default": false
+      },
+      "description": "true: return a presigned URL instead of base64 data.",
+      "example": false
+     },
+     {
+      "name": "view",
+      "in": "query",
+      "required": false,
+      "schema": {
+       "type": "boolean",
+       "default": false
+      },
+      "description": "true: redirect to the audio, played in the browser.",
+      "example": false
+     },
+     {
+      "name": "download",
+      "in": "query",
+      "required": false,
+      "schema": {
+       "type": "boolean",
+       "default": false
+      },
+      "description": "true: redirect to the audio, saved as a file.",
+      "example": false
+     },
+     {
+      "name": "play",
+      "in": "query",
+      "required": false,
+      "schema": {
+       "type": "boolean",
+       "default": false
+      },
+      "description": "true: answer with a small HTML page that plays the audio from script, with no player on screen. A browser only lets a page make sound once the visitor has clicked something on the site, so when it refuses the page shows one Play button. Not combined with view or download.",
+      "example": false
+     }
+    ],
+    "responses": {
+     "200": {
+      "description": "OK. With play=true, an HTML page that plays the audio.",
+      "content": {
+       "application/json": {
+        "schema": {
+         "type": "object",
+         "required": [
+          "source",
+          "format",
+          "bytes",
+          "filename",
+          "contentType"
+         ],
+         "properties": {
+          "ref": {
+           "type": "string",
+           "description": "Handle for this exact audio. Pass it to voice/get to replay it, or voice/save to keep it."
+          },
+          "text": {
+           "type": "string",
+           "description": "The words spoken, with the tags removed: the transcript to expect."
+          },
+          "voice": {
+           "type": "string"
+          },
+          "language": {
+           "type": "string"
+          },
+          "engine": {
+           "type": "string",
+           "enum": [
+            "standard",
+            "neural",
+            "generative"
+           ]
+          },
+          "format": {
+           "type": "string"
+          },
+          "hz": {
+           "type": "integer",
+           "description": "Sample rate."
+          },
+          "channels": {
+           "type": "integer"
+          },
+          "bytes": {
+           "type": "integer"
+          },
+          "durationMs": {
+           "type": "integer",
+           "description": "Length of the audio, read from the audio itself."
+          },
+          "characters": {
+           "type": "integer",
+           "description": "Characters billed by the speech engine."
+          },
+          "tags": {
+           "type": "array",
+           "items": {
+            "type": "object",
+            "required": [
+             "tag",
+             "kind",
+             "at",
+             "rendered",
+             "how"
+            ],
+            "properties": {
+             "tag": {
+              "type": "string",
+              "description": "The tag as written, lower case."
+             },
+             "kind": {
+              "type": "string",
+              "enum": [
+               "emotion",
+               "pace",
+               "volume",
+               "pause",
+               "reset",
+               "sound",
+               "accent",
+               "unknown"
+              ]
+             },
+             "at": {
+              "type": "integer",
+              "description": "Characters of spoken text before the tag."
+             },
+             "rendered": {
+              "type": "string",
+              "enum": [
+               "native",
+               "approximated",
+               "inferred",
+               "none"
+              ],
+              "description": "native: the engine did exactly this. approximated: the nearest thing it has. inferred: left to the engine, which reads emotion from the wording. none: not audible in this audio."
+             },
+             "how": {
+              "type": "string",
+              "description": "What was actually done, e.g. \"rate 112%\"."
+             }
+            }
+           },
+           "description": "One entry per tag, in order: what the engine did with it."
+          },
+          "ssml": {
+           "type": "string",
+           "description": "Exactly what was sent to the speech engine."
+          },
+          "filename": {
+           "type": "string"
+          },
+          "contentType": {
+           "type": "string"
+          },
+          "sha256": {
+           "type": "string"
+          },
+          "createdTime": {
+           "type": "integer",
+           "description": "When the audio was generated, UTC epoch seconds."
+          },
+          "savedTime": {
+           "type": "integer",
+           "description": "When it was saved under the key, UTC epoch seconds."
+          },
+          "data": {
+           "type": "string",
+           "description": "The audio, base64. Absent when url is returned."
+          },
+          "url": {
+           "type": "string",
+           "description": "Presigned URL for the audio (url=true, or audio over 4096 KB)."
+          },
+          "expiresInSeconds": {
+           "type": "integer"
+          },
+          "key": {
+           "type": "string"
+          },
+          "source": {
+           "type": "string",
+           "enum": [
+            "generated",
+            "saved"
+           ],
+           "description": "generated: found by ref. saved: found by key."
+          },
+          "savedFrom": {
+           "type": "string",
+           "enum": [
+            "generated",
+            "upload"
+           ],
+           "description": "For saved audio: a pinned utterance, or an uploaded recording."
+          }
+         }
+        },
+        "example": {
+         "ref": "vyohg19bkdkm",
+         "source": "generated",
+         "text": "I've been waiting forty minutes. Is the doctor running late?",
+         "voice": "Olivia",
+         "language": "en-AU",
+         "engine": "neural",
+         "format": "wav",
+         "hz": 16000,
+         "bytes": 148524,
+         "durationMs": 4640,
+         "characters": 60,
+         "tags": [
+          {
+           "tag": "anxious",
+           "kind": "emotion",
+           "at": 0,
+           "rendered": "approximated",
+           "how": "rate 112%"
+          },
+          {
+           "tag": "sighs",
+           "kind": "sound",
+           "at": 32,
+           "rendered": "none",
+           "how": "no AWS voice makes this sound yet; kept in the stored script"
+          }
+         ],
+         "ssml": "<speak><prosody rate=\"112%\">I've been waiting forty minutes. Is the doctor running late?</prosody></speak>",
+         "filename": "vyohg19bkdkm.wav",
+         "contentType": "audio/wav",
+         "createdTime": 1794611725,
+         "data": "UklGRqQ+AABXQVZFZm10IBAA..."
+        }
+       },
+       "text/html": {
+        "schema": {
+         "type": "string"
+        },
+        "example": "<!doctype html>...<p class=\"said\">Hello Paul</p>...<script nonce=\"...\">...new Audio()...</script></html>"
+       }
+      }
+     },
+     "302": {
+      "description": "view=true or download=true: redirect (Location header) to the audio itself.",
+      "headers": {
+       "Location": {
+        "description": "A presigned URL for the audio, valid for a few minutes: played in the browser for view=true, saved for download=true.",
+        "schema": {
+         "type": "string",
+         "format": "uri"
+        }
+       }
+      }
+     },
+     "400": {
+      "$ref": "#/components/responses/Error"
+     },
+     "404": {
+      "$ref": "#/components/responses/Error"
+     }
+    }
+   }
+  },
+  "/voice/save": {
+   "get": {
+    "tags": [
+     "voice"
+    ],
+    "operationId": "voiceSave",
+    "summary": "Keep a generated utterance under a key (pin)",
+    "description": "Keeps audio under a `key` you choose, until you delete it (overwrites). Two sources:\n\n1. **GET or POST with `ref`** - pin a generated utterance: your regression set of stimuli, safe from the 30-day expiry and from any change to the speech engine.\n2. **POST with the audio as the request body**, up to 4096 KB - a recording: a human voice with real emotion, or what the system under test said. Raw bytes with `Content-Type: application/octet-stream`, or the base64 of the file with any other content type. WAV, MP3 and Ogg are recognised and measured.\n\nAnyone who knows a key can fetch what is under it: save synthetic voices, or recordings of people who agreed.",
+    "parameters": [
+     {
+      "name": "key",
+      "in": "query",
+      "required": true,
+      "schema": {
+       "type": "string"
+      },
+      "description": "The key to save under: 1-128 characters, letters, digits and . _ - : @ + =, starting with a letter, digit or +.",
+      "example": "anxious.waiting"
+     },
+     {
+      "name": "ref",
+      "in": "query",
+      "required": false,
+      "schema": {
+       "type": "string"
+      },
+      "description": "Pin this generated utterance (from voice/say) instead of uploading a body. 404 if it has expired.",
+      "example": "v7k2m9q4x1ab"
+     },
+     {
+      "name": "filename",
+      "in": "query",
+      "required": false,
+      "schema": {
+       "type": "string"
+      },
+      "description": "For an uploaded recording: its name, with its extension. Default: the key plus the detected format's extension.",
+      "example": "take1.wav"
+     }
+    ],
+    "responses": {
+     "200": {
+      "description": "OK",
+      "content": {
+       "application/json": {
+        "schema": {
+         "type": "object",
+         "required": [
+          "key",
+          "saved",
+          "source",
+          "format",
+          "bytes",
+          "filename",
+          "contentType",
+          "savedTime",
+          "getUrl"
+         ],
+         "properties": {
+          "ref": {
+           "type": "string",
+           "description": "Handle for this exact audio. Pass it to voice/get to replay it, or voice/save to keep it."
+          },
+          "text": {
+           "type": "string",
+           "description": "The words spoken, with the tags removed: the transcript to expect."
+          },
+          "voice": {
+           "type": "string"
+          },
+          "language": {
+           "type": "string"
+          },
+          "engine": {
+           "type": "string",
+           "enum": [
+            "standard",
+            "neural",
+            "generative"
+           ]
+          },
+          "format": {
+           "type": "string"
+          },
+          "hz": {
+           "type": "integer",
+           "description": "Sample rate."
+          },
+          "channels": {
+           "type": "integer"
+          },
+          "bytes": {
+           "type": "integer"
+          },
+          "durationMs": {
+           "type": "integer",
+           "description": "Length of the audio, read from the audio itself."
+          },
+          "characters": {
+           "type": "integer",
+           "description": "Characters billed by the speech engine."
+          },
+          "tags": {
+           "type": "array",
+           "items": {
+            "type": "object",
+            "required": [
+             "tag",
+             "kind",
+             "at",
+             "rendered",
+             "how"
+            ],
+            "properties": {
+             "tag": {
+              "type": "string",
+              "description": "The tag as written, lower case."
+             },
+             "kind": {
+              "type": "string",
+              "enum": [
+               "emotion",
+               "pace",
+               "volume",
+               "pause",
+               "reset",
+               "sound",
+               "accent",
+               "unknown"
+              ]
+             },
+             "at": {
+              "type": "integer",
+              "description": "Characters of spoken text before the tag."
+             },
+             "rendered": {
+              "type": "string",
+              "enum": [
+               "native",
+               "approximated",
+               "inferred",
+               "none"
+              ],
+              "description": "native: the engine did exactly this. approximated: the nearest thing it has. inferred: left to the engine, which reads emotion from the wording. none: not audible in this audio."
+             },
+             "how": {
+              "type": "string",
+              "description": "What was actually done, e.g. \"rate 112%\"."
+             }
+            }
+           },
+           "description": "One entry per tag, in order: what the engine did with it."
+          },
+          "ssml": {
+           "type": "string",
+           "description": "Exactly what was sent to the speech engine."
+          },
+          "filename": {
+           "type": "string"
+          },
+          "contentType": {
+           "type": "string"
+          },
+          "sha256": {
+           "type": "string"
+          },
+          "createdTime": {
+           "type": "integer",
+           "description": "When the audio was generated, UTC epoch seconds."
+          },
+          "savedTime": {
+           "type": "integer",
+           "description": "When it was saved under the key, UTC epoch seconds."
+          },
+          "getUrl": {
+           "type": "string",
+           "description": "Ready-made voice/get URL for this audio."
+          },
+          "key": {
+           "type": "string"
+          },
+          "saved": {
+           "type": "boolean"
+          },
+          "source": {
+           "type": "string",
+           "enum": [
+            "generated",
+            "upload"
+           ]
+          },
+          "bodyFormat": {
+           "type": "string",
+           "enum": [
+            "binary",
+            "base64"
+           ]
+          },
+          "hint": {
+           "type": "string"
+          }
+         }
+        },
+        "example": {
+         "key": "anxious.waiting",
+         "saved": true,
+         "source": "generated",
+         "ref": "vyohg19bkdkm",
+         "text": "I've been waiting forty minutes. Is the doctor running late?",
+         "voice": "Olivia",
+         "language": "en-AU",
+         "engine": "neural",
+         "format": "wav",
+         "hz": 16000,
+         "bytes": 148524,
+         "durationMs": 4640,
+         "characters": 60,
+         "tags": [
+          {
+           "tag": "anxious",
+           "kind": "emotion",
+           "at": 0,
+           "rendered": "approximated",
+           "how": "rate 112%"
+          },
+          {
+           "tag": "sighs",
+           "kind": "sound",
+           "at": 32,
+           "rendered": "none",
+           "how": "no AWS voice makes this sound yet; kept in the stored script"
+          }
+         ],
+         "ssml": "<speak><prosody rate=\"112%\">I've been waiting forty minutes. Is the doctor running late?</prosody></speak>",
+         "filename": "anxious.waiting.wav",
+         "contentType": "audio/wav",
+         "createdTime": 1794611725,
+         "savedTime": 1794611725,
+         "getUrl": "https://api.example.com/v1/voice/get?key=anxious.waiting"
+        }
+       }
+      }
+     },
+     "400": {
+      "$ref": "#/components/responses/Error"
+     },
+     "404": {
+      "$ref": "#/components/responses/Error"
+     }
+    }
+   },
+   "post": {
+    "tags": [
+     "voice"
+    ],
+    "operationId": "voiceSavePost",
+    "summary": "Keep a recording from the request body under a key",
+    "description": "Keeps audio under a `key` you choose, until you delete it (overwrites). Two sources:\n\n1. **GET or POST with `ref`** - pin a generated utterance: your regression set of stimuli, safe from the 30-day expiry and from any change to the speech engine.\n2. **POST with the audio as the request body**, up to 4096 KB - a recording: a human voice with real emotion, or what the system under test said. Raw bytes with `Content-Type: application/octet-stream`, or the base64 of the file with any other content type. WAV, MP3 and Ogg are recognised and measured.\n\nAnyone who knows a key can fetch what is under it: save synthetic voices, or recordings of people who agreed.",
+    "parameters": [
+     {
+      "name": "key",
+      "in": "query",
+      "required": true,
+      "schema": {
+       "type": "string"
+      },
+      "description": "The key to save under: 1-128 characters, letters, digits and . _ - : @ + =, starting with a letter, digit or +.",
+      "example": "anxious.waiting"
+     },
+     {
+      "name": "ref",
+      "in": "query",
+      "required": false,
+      "schema": {
+       "type": "string"
+      },
+      "description": "Pin this generated utterance (from voice/say) instead of uploading a body. 404 if it has expired.",
+      "example": "v7k2m9q4x1ab"
+     },
+     {
+      "name": "filename",
+      "in": "query",
+      "required": false,
+      "schema": {
+       "type": "string"
+      },
+      "description": "For an uploaded recording: its name, with its extension. Default: the key plus the detected format's extension.",
+      "example": "take1.wav"
+     }
+    ],
+    "requestBody": {
+     "required": false,
+     "content": {
+      "application/octet-stream": {
+       "schema": {
+        "type": "string",
+        "format": "binary"
+       }
+      },
+      "text/plain": {
+       "schema": {
+        "type": "string",
+        "description": "Base64 of the audio file."
+       },
+       "example": "UklGRiQAAABXQVZFZm10IBAAAAABAAEAgD4AAAB9AAACABAAZGF0YQAAAAA="
+      }
+     }
+    },
+    "responses": {
+     "200": {
+      "description": "OK",
+      "content": {
+       "application/json": {
+        "schema": {
+         "type": "object",
+         "required": [
+          "key",
+          "saved",
+          "source",
+          "format",
+          "bytes",
+          "filename",
+          "contentType",
+          "savedTime",
+          "getUrl"
+         ],
+         "properties": {
+          "ref": {
+           "type": "string",
+           "description": "Handle for this exact audio. Pass it to voice/get to replay it, or voice/save to keep it."
+          },
+          "text": {
+           "type": "string",
+           "description": "The words spoken, with the tags removed: the transcript to expect."
+          },
+          "voice": {
+           "type": "string"
+          },
+          "language": {
+           "type": "string"
+          },
+          "engine": {
+           "type": "string",
+           "enum": [
+            "standard",
+            "neural",
+            "generative"
+           ]
+          },
+          "format": {
+           "type": "string"
+          },
+          "hz": {
+           "type": "integer",
+           "description": "Sample rate."
+          },
+          "channels": {
+           "type": "integer"
+          },
+          "bytes": {
+           "type": "integer"
+          },
+          "durationMs": {
+           "type": "integer",
+           "description": "Length of the audio, read from the audio itself."
+          },
+          "characters": {
+           "type": "integer",
+           "description": "Characters billed by the speech engine."
+          },
+          "tags": {
+           "type": "array",
+           "items": {
+            "type": "object",
+            "required": [
+             "tag",
+             "kind",
+             "at",
+             "rendered",
+             "how"
+            ],
+            "properties": {
+             "tag": {
+              "type": "string",
+              "description": "The tag as written, lower case."
+             },
+             "kind": {
+              "type": "string",
+              "enum": [
+               "emotion",
+               "pace",
+               "volume",
+               "pause",
+               "reset",
+               "sound",
+               "accent",
+               "unknown"
+              ]
+             },
+             "at": {
+              "type": "integer",
+              "description": "Characters of spoken text before the tag."
+             },
+             "rendered": {
+              "type": "string",
+              "enum": [
+               "native",
+               "approximated",
+               "inferred",
+               "none"
+              ],
+              "description": "native: the engine did exactly this. approximated: the nearest thing it has. inferred: left to the engine, which reads emotion from the wording. none: not audible in this audio."
+             },
+             "how": {
+              "type": "string",
+              "description": "What was actually done, e.g. \"rate 112%\"."
+             }
+            }
+           },
+           "description": "One entry per tag, in order: what the engine did with it."
+          },
+          "ssml": {
+           "type": "string",
+           "description": "Exactly what was sent to the speech engine."
+          },
+          "filename": {
+           "type": "string"
+          },
+          "contentType": {
+           "type": "string"
+          },
+          "sha256": {
+           "type": "string"
+          },
+          "createdTime": {
+           "type": "integer",
+           "description": "When the audio was generated, UTC epoch seconds."
+          },
+          "savedTime": {
+           "type": "integer",
+           "description": "When it was saved under the key, UTC epoch seconds."
+          },
+          "getUrl": {
+           "type": "string",
+           "description": "Ready-made voice/get URL for this audio."
+          },
+          "key": {
+           "type": "string"
+          },
+          "saved": {
+           "type": "boolean"
+          },
+          "source": {
+           "type": "string",
+           "enum": [
+            "generated",
+            "upload"
+           ]
+          },
+          "bodyFormat": {
+           "type": "string",
+           "enum": [
+            "binary",
+            "base64"
+           ]
+          },
+          "hint": {
+           "type": "string"
+          }
+         }
+        },
+        "example": {
+         "key": "anxious.waiting",
+         "saved": true,
+         "source": "generated",
+         "ref": "vyohg19bkdkm",
+         "text": "I've been waiting forty minutes. Is the doctor running late?",
+         "voice": "Olivia",
+         "language": "en-AU",
+         "engine": "neural",
+         "format": "wav",
+         "hz": 16000,
+         "bytes": 148524,
+         "durationMs": 4640,
+         "characters": 60,
+         "tags": [
+          {
+           "tag": "anxious",
+           "kind": "emotion",
+           "at": 0,
+           "rendered": "approximated",
+           "how": "rate 112%"
+          },
+          {
+           "tag": "sighs",
+           "kind": "sound",
+           "at": 32,
+           "rendered": "none",
+           "how": "no AWS voice makes this sound yet; kept in the stored script"
+          }
+         ],
+         "ssml": "<speak><prosody rate=\"112%\">I've been waiting forty minutes. Is the doctor running late?</prosody></speak>",
+         "filename": "anxious.waiting.wav",
+         "contentType": "audio/wav",
+         "createdTime": 1794611725,
+         "savedTime": 1794611725,
+         "getUrl": "https://api.example.com/v1/voice/get?key=anxious.waiting"
+        }
+       }
+      }
+     },
+     "400": {
+      "$ref": "#/components/responses/Error"
+     },
+     "404": {
+      "$ref": "#/components/responses/Error"
+     }
+    }
+   }
+  },
+  "/voice/delete": {
+   "get": {
+    "tags": [
+     "voice"
+    ],
+    "operationId": "voiceDelete",
+    "summary": "Delete saved audio",
+    "description": "Deletes the audio saved under `key`. Idempotent: `deleted` is false when there was nothing there. Generated utterances (refs) are not deleted this way; they expire on their own.",
+    "parameters": [
+     {
+      "name": "key",
+      "in": "query",
+      "required": true,
+      "schema": {
+       "type": "string"
+      },
+      "description": "The key the audio was saved under.",
+      "example": "anxious.waiting"
+     }
+    ],
+    "responses": {
+     "200": {
+      "description": "OK",
+      "content": {
+       "application/json": {
+        "schema": {
+         "type": "object",
+         "required": [
+          "key",
+          "deleted"
+         ],
+         "properties": {
+          "key": {
+           "type": "string"
+          },
+          "deleted": {
+           "type": "boolean"
+          }
+         }
+        },
+        "example": {
+         "key": "anxious.waiting",
+         "deleted": true
+        }
+       }
+      }
+     },
+     "400": {
+      "$ref": "#/components/responses/Error"
+     }
+    }
+   }
+  },
+  "/voice/voices": {
+   "get": {
+    "tags": [
+     "voice"
+    ],
+    "operationId": "voiceVoices",
+    "summary": "The voices, and what each engine can render",
+    "description": "The voices available to voice/say, read live from the speech service (so new voices appear on their own), with the deployment's default voice and engine, and `engines`: for each engine, whether pauses, pace, volume, whisper, emotion and sounds are rendered natively, approximated, inferred or not at all. Check `engines` before asserting on tone: when an engine gains real emotion control, this is where it shows.",
+    "parameters": [
+     {
+      "name": "language",
+      "in": "query",
+      "required": false,
+      "schema": {
+       "type": "string"
+      },
+      "description": "Only voices that speak this language: a code (en-AU) or a language (en).",
+      "example": "en-AU"
+     },
+     {
+      "name": "engine",
+      "in": "query",
+      "required": false,
+      "schema": {
+       "type": "string",
+       "enum": [
+        "standard",
+        "neural",
+        "generative"
+       ]
+      },
+      "description": "Only voices available on this engine.",
+      "example": "neural"
+     }
+    ],
+    "responses": {
+     "200": {
+      "description": "OK",
+      "content": {
+       "application/json": {
+        "schema": {
+         "type": "object",
+         "required": [
+          "default",
+          "engines",
+          "count",
+          "voices"
+         ],
+         "properties": {
+          "region": {
+           "type": "string",
+           "nullable": true,
+           "description": "The region whose speech service is used."
+          },
+          "default": {
+           "type": "object",
+           "required": [
+            "voice",
+            "engine"
+           ],
+           "properties": {
+            "voice": {
+             "type": "string"
+            },
+            "language": {
+             "type": "string"
+            },
+            "engine": {
+             "type": "string"
+            }
+           }
+          },
+          "engines": {
+           "type": "object",
+           "additionalProperties": {
+            "type": "object",
+            "additionalProperties": {
+             "type": "string"
+            }
+           },
+           "description": "Per engine: how each kind of direction is rendered (native, approximated, inferred or none)."
+          },
+          "count": {
+           "type": "integer"
+          },
+          "voices": {
+           "type": "array",
+           "items": {
+            "type": "object",
+            "required": [
+             "voice",
+             "language",
+             "engines",
+             "languages"
+            ],
+            "properties": {
+             "voice": {
+              "type": "string",
+              "description": "The name to pass as voice."
+             },
+             "language": {
+              "type": "string",
+              "description": "The language it speaks by default."
+             },
+             "languageName": {
+              "type": "string"
+             },
+             "gender": {
+              "type": "string"
+             },
+             "engines": {
+              "type": "array",
+              "items": {
+               "type": "string"
+              }
+             },
+             "languages": {
+              "type": "array",
+              "items": {
+               "type": "string"
+              },
+              "description": "Every language code it can speak."
+             }
+            }
+           }
+          }
+         }
+        },
+        "example": {
+         "region": "ap-southeast-2",
+         "default": {
+          "voice": "Olivia",
+          "language": "en-AU",
+          "engine": "neural"
+         },
+         "engines": {
+          "standard": {
+           "pause": "native",
+           "pace": "native",
+           "volume": "native",
+           "whisper": "native",
+           "emotion": "approximated",
+           "sound": "none"
+          },
+          "neural": {
+           "pause": "native",
+           "pace": "native",
+           "volume": "native",
+           "whisper": "approximated",
+           "emotion": "approximated",
+           "sound": "none"
+          },
+          "generative": {
+           "pause": "native",
+           "pace": "approximated",
+           "volume": "approximated",
+           "whisper": "approximated",
+           "emotion": "inferred",
+           "sound": "none"
+          }
+         },
+         "count": 3,
+         "voices": [
+          {
+           "voice": "Nicole",
+           "language": "en-AU",
+           "languageName": "Australian English",
+           "gender": "female",
+           "engines": [
+            "standard"
+           ],
+           "languages": [
+            "en-AU"
+           ]
+          },
+          {
+           "voice": "Olivia",
+           "language": "en-AU",
+           "languageName": "Australian English",
+           "gender": "female",
+           "engines": [
+            "generative",
+            "neural"
+           ],
+           "languages": [
+            "en-AU"
+           ]
+          },
+          {
+           "voice": "Russell",
+           "language": "en-AU",
+           "languageName": "Australian English",
+           "gender": "male",
+           "engines": [
+            "generative",
+            "standard"
+           ],
+           "languages": [
+            "en-AU"
+           ]
+          }
+         ]
+        }
+       }
+      }
+     },
+     "400": {
+      "$ref": "#/components/responses/Error"
+     },
+     "502": {
+      "$ref": "#/components/responses/Error"
+     }
+    }
+   }
+  },
+  "/voice/tags": {
+   "get": {
+    "tags": [
+     "voice"
+    ],
+    "operationId": "voiceTags",
+    "summary": "The [tag] vocabulary and how each engine renders it",
+    "description": "Every tag voice/say understands, by kind (emotion, pace, volume, pause, reset, sound), with the other words that mean the same (`also`) and how each engine renders it. Also the syntax rules and the meaning of each `rendered` value. A tag that is not listed is accepted, never spoken, and reported as `none`.",
+    "parameters": [],
+    "responses": {
+     "200": {
+      "description": "OK",
+      "content": {
+       "application/json": {
+        "schema": {
+         "type": "object",
+         "required": [
+          "syntax",
+          "rendered",
+          "engines",
+          "tags"
+         ],
+         "properties": {
+          "syntax": {
+           "type": "array",
+           "items": {
+            "type": "string"
+           }
+          },
+          "rendered": {
+           "type": "object",
+           "additionalProperties": {
+            "type": "string"
+           }
+          },
+          "engines": {
+           "type": "object",
+           "additionalProperties": {
+            "type": "object",
+            "additionalProperties": {
+             "type": "string"
+            }
+           },
+           "description": "Per engine: how each kind of direction is rendered (native, approximated, inferred or none)."
+          },
+          "tags": {
+           "type": "array",
+           "items": {
+            "type": "object",
+            "required": [
+             "tag",
+             "kind",
+             "also",
+             "rendered"
+            ],
+            "properties": {
+             "tag": {
+              "type": "string"
+             },
+             "kind": {
+              "type": "string"
+             },
+             "also": {
+              "type": "array",
+              "items": {
+               "type": "string"
+              }
+             },
+             "ms": {
+              "type": "integer"
+             },
+             "rendered": {
+              "type": "object",
+              "additionalProperties": {
+               "type": "string"
+              }
+             }
+            }
+           }
+          }
+         }
+        },
+        "example": {
+         "syntax": [
+          "Put a tag in square brackets where the delivery should change: [anxious] I have been waiting. [pause] Is the doctor late?",
+          "A tag holds until the next tag of the same kind (emotion, pace, volume) or the end; [neutral] clears all three.",
+          "Tags are never spoken. One this service does not know is kept in the stored script and reported as rendered: none.",
+          "The emotion parameter is the same as one emotion tag at the very start.",
+          "Write \\[ for a bracket that should be read as text."
+         ],
+         "rendered": {
+          "native": "the engine does exactly this",
+          "approximated": "the nearest thing the engine has (a change of rate, pitch or volume)",
+          "inferred": "left to the engine, which reads emotion from the wording",
+          "none": "not audible; with strict=true the request is refused (422) instead"
+         },
+         "engines": {
+          "standard": {
+           "pause": "native",
+           "pace": "native",
+           "volume": "native",
+           "whisper": "native",
+           "emotion": "approximated",
+           "sound": "none"
+          },
+          "neural": {
+           "pause": "native",
+           "pace": "native",
+           "volume": "native",
+           "whisper": "approximated",
+           "emotion": "approximated",
+           "sound": "none"
+          },
+          "generative": {
+           "pause": "native",
+           "pace": "approximated",
+           "volume": "approximated",
+           "whisper": "approximated",
+           "emotion": "inferred",
+           "sound": "none"
+          }
+         },
+         "tags": [
+          {
+           "tag": "anxious",
+           "kind": "emotion",
+           "also": [
+            "anxiously",
+            "worried",
+            "nervous"
+           ],
+           "rendered": {
+            "standard": "approximated",
+            "neural": "approximated",
+            "generative": "inferred"
+           }
+          },
+          {
+           "tag": "slowly",
+           "kind": "pace",
+           "also": [
+            "slow",
+            "deliberately"
+           ],
+           "rendered": {
+            "standard": "native",
+            "neural": "native",
+            "generative": "approximated"
+           }
+          },
+          {
+           "tag": "whispers",
+           "kind": "volume",
+           "also": [
+            "whisper",
+            "whispering",
+            "whispered"
+           ],
+           "rendered": {
+            "standard": "native",
+            "neural": "approximated",
+            "generative": "approximated"
+           }
+          },
+          {
+           "tag": "pause",
+           "kind": "pause",
+           "also": [],
+           "ms": 500,
+           "rendered": {
+            "standard": "native",
+            "neural": "native",
+            "generative": "native"
+           }
+          },
+          {
+           "tag": "sighs",
+           "kind": "sound",
+           "also": [
+            "sigh",
+            "sighing",
+            "laughs"
+           ],
+           "rendered": {
+            "standard": "none",
+            "neural": "none",
+            "generative": "none"
+           }
+          }
+         ]
+        }
+       }
+      }
+     }
+    }
+   }
+  }
+ }
+}

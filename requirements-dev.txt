@@ -1,0 +1,6 @@
+# Test-only dependencies. The Lambda functions themselves need nothing beyond
+# the Python 3.12 / Node.js runtimes (boto3 and the AWS SDK v3 are built in).
+pytest>=8
+boto3>=1.34
+moto[all]>=5.1,<6
+python-hcl2>=4.3   # tests/test_terraform_parity.py (terraform/ matches template.yaml)

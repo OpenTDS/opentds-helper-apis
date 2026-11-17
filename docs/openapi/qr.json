@@ -1,0 +1,217 @@
+{
+ "tag": {
+  "name": "qr",
+  "description": "QR codes from text, as JSON (PNG as base64 and a data: URI), SVG, or a self-contained HTML page. Pure computation, no storage."
+ },
+ "paths": {
+  "/qr/get": {
+   "get": {
+    "tags": [
+     "qr"
+    ],
+    "operationId": "qrGet",
+    "summary": "Encode text as a QR code (JSON, SVG or HTML page)",
+    "description": "One action, three outputs chosen by format.\n\n* json (default) - the PNG as base64 in png, the same as a ready-to-use data: URI in dataUri, and the metadata: text, bytes, ecc, version, modules, mask, scale, border, pixels, pngBytes. This is the form for scripts: one base64 decode gives the image bytes.\n* svg - image/svg+xml. Text rather than binary, so it works directly as the target of an <img src=...>, is resolution-independent, and is drawn as a single path with horizontal runs merged, so it stays compact.\n* html - a self-contained page with the PNG inlined, the text it encodes, version, module count, error-correction level, a download link, and a small form that re-encodes new text (submitting back to qr/get with format=html, keeping ecc/scale/border). Errors in this format are an HTML page too.\n\nByte-mode encoding, all 40 versions, all four error-correction levels, automatic mask selection; the smallest version that fits is chosen unless version forces a larger one.",
+    "parameters": [
+     {
+      "name": "text",
+      "in": "query",
+      "required": false,
+      "schema": {
+       "type": "string"
+      },
+      "description": "The text to encode, URL-encoded. Up to 2900 bytes of UTF-8, and fewer at higher error-correction levels. Send text or text64, not both.",
+      "example": "hello world"
+     },
+     {
+      "name": "text64",
+      "in": "query",
+      "required": false,
+      "schema": {
+       "type": "string"
+      },
+      "description": "Base64 of the text (standard or URL-safe alphabet, padding optional). Use this for anything containing + & % or #, which do not survive a query string intact.",
+      "example": "aGVsbG8gd29ybGQ="
+     },
+     {
+      "name": "format",
+      "in": "query",
+      "required": false,
+      "schema": {
+       "type": "string",
+       "default": "json",
+       "enum": [
+        "json",
+        "svg",
+        "html"
+       ]
+      },
+      "description": "json (default), svg or html.",
+      "example": "json"
+     },
+     {
+      "name": "ecc",
+      "in": "query",
+      "required": false,
+      "schema": {
+       "type": "string",
+       "default": "M",
+       "enum": [
+        "L",
+        "M",
+        "Q",
+        "H"
+       ]
+      },
+      "description": "Error-correction level, case-insensitive: L recovers about 7% damage, M about 15%, Q about 25%, H about 30%. Higher levels cost capacity, so a long payload at H may need a larger symbol or be rejected.",
+      "example": "M"
+     },
+     {
+      "name": "scale",
+      "in": "query",
+      "required": false,
+      "schema": {
+       "type": "integer",
+       "default": 8,
+       "minimum": 1,
+       "maximum": 40
+      },
+      "description": "Pixels per module, 1-40 (clamped). Default 8.",
+      "example": 8
+     },
+     {
+      "name": "border",
+      "in": "query",
+      "required": false,
+      "schema": {
+       "type": "integer",
+       "default": 4,
+       "minimum": 0,
+       "maximum": 16
+      },
+      "description": "Quiet zone in modules, 0-16 (clamped). Default 4, which the specification calls for; less can stop some readers finding the symbol.",
+      "example": 4
+     },
+     {
+      "name": "version",
+      "in": "query",
+      "required": false,
+      "schema": {
+       "type": "integer",
+       "default": 1,
+       "minimum": 1,
+       "maximum": 40
+      },
+      "description": "Minimum symbol version, 1-40 (clamped). Default 1 = smallest that fits. Useful when a fixed physical size matters more than density.",
+      "example": 1
+     }
+    ],
+    "responses": {
+     "200": {
+      "description": "JSON (default), SVG or HTML according to format",
+      "content": {
+       "application/json": {
+        "schema": {
+         "type": "object",
+         "required": [
+          "text",
+          "bytes",
+          "ecc",
+          "version",
+          "modules",
+          "mask",
+          "scale",
+          "border",
+          "pixels",
+          "pngBytes",
+          "png",
+          "dataUri"
+         ],
+         "properties": {
+          "text": {
+           "type": "string"
+          },
+          "bytes": {
+           "type": "integer"
+          },
+          "ecc": {
+           "type": "string"
+          },
+          "version": {
+           "type": "integer"
+          },
+          "modules": {
+           "type": "integer"
+          },
+          "mask": {
+           "type": "integer"
+          },
+          "scale": {
+           "type": "integer"
+          },
+          "border": {
+           "type": "integer"
+          },
+          "pixels": {
+           "type": "integer"
+          },
+          "pngBytes": {
+           "type": "integer"
+          },
+          "png": {
+           "type": "string"
+          },
+          "dataUri": {
+           "type": "string"
+          }
+         }
+        },
+        "example": {
+         "text": "hello world",
+         "bytes": 11,
+         "ecc": "M",
+         "version": 1,
+         "modules": 21,
+         "mask": 2,
+         "scale": 2,
+         "border": 1,
+         "pixels": 46,
+         "pngBytes": 238,
+         "png": "iVBORw0KGgoAAAANSUhEUgAAAC4AAAAuCAAAAABy0nTrAAAAtUlEQVR42rWWCw6AMAhDuf+lNTG6lRZFcJr4yXy6Cu2ibaXNyri57Rg8R/VeB4fJLD6Pl7TwMRkIQFnj3iL8ul6P8/4Vd8WyWcIXdU9xarQIefRMgotJSWDi9wT3k/IH43gHxyjcfSS0qYircTF4U5LTXsZ95CK4gzMSYWCxFq4mmNKgeWVcFz2NhytkEb8zb9DAFs7BQwOnS2oR52jAIwvxoKAtnJujovo4R1iDPo5l/Md/gh0j6J+ZtK2QsQAAAABJRU5ErkJggg==",
+         "dataUri": "data:image/png;base64,iVBORw0KGgoAAAANSUhEUgAAAC4AAAAuCAAAAABy0nTrAAAAtUlEQVR42rWWCw6AMAhDuf+lNTG6lRZFcJr4yXy6Cu2ibaXNyri57Rg8R/VeB4fJLD6Pl7TwMRkIQFnj3iL8ul6P8/4Vd8WyWcIXdU9xarQIefRMgotJSWDi9wT3k/IH43gHxyjcfSS0qYircTF4U5LTXsZ95CK4gzMSYWCxFq4mmNKgeWVcFz2NhytkEb8zb9DAFs7BQwOnS2oR52jAIwvxoKAtnJujovo4R1iDPo5l/Md/gh0j6J+ZtK2QsQAAAABJRU5ErkJggg=="
+        }
+       },
+       "image/svg+xml": {
+        "schema": {
+         "type": "string"
+        },
+        "example": "<svg xmlns=\"http://www.w3.org/2000/svg\" width=\"100\" height=\"100\" viewBox=\"0 0 25 25\" shape-rendering=\"crispEdges\" role=\"img\"><rect width=\"25\" height=\"25\" fill=\"#fff\"/><path fill=\"#000\" d=\"M2 2h7v1h-7zM11 2h4v1h-4zM16 2h7v1h-7zM2 3h1v1h-1zM8 3h1v1h-1zM11 3h2v1h-2zM14 3h1v1h-1zM16 3h1v1h-1zM22 3h1v1h-1zM2 4h1v1h-1zM4 4h3v1h-3zM8 4h1v1h-1zM10 4h2v1h-2zM13 4h2v1h-2zM16 4h1v1h-1zM18 4h3v1h-3zM22 4h1v1h-1zM2 5h1v1h-1zM4 5h3v1h-3zM8 5h1v1h-1zM10 5h2v1h-2zM14 5h1v1h-1zM16 5h1v1h-1zM18 5h3v1h-3zM22 5h1v1h-1zM2 6h1v1h-1zM4 6h3v1h-3zM8 6h1v1h-1zM10 6h1v1h-1zM13 6h2v1h-2zM16 6h1v1h-1zM18 6h3v1h-3zM22 6h1v1h-1zM2 7h1v1h-1zM8 7h1v1h-1zM10 7h2v1h-2zM14 7h1v1h-1zM16 7h1v1h-1zM22 7h1v1h-1zM2 8h7v1h-7zM10 8h1v1h-1zM12 8h1v1h-1zM14 8h1v1h-1zM16 8h7v1h-7zM10 9h1v1h-1zM12 9h3v1h-3zM2 10h1v1h-1zM4 10h5v1h-5zM14 10h1v1h-1zM16 10h5v1h-5zM3 11h3v1h-3zM7 11h1v1h-1zM9 11h1v1h-1zM12 11h1v1h-1zM14 11h1v1h-1zM17 11h1v1h-1zM22 11h1v1h-1zM4 12h2v1h-2zM8 12h2v1h-2zM11 12h1v1h-1zM13 12h1v1h-1zM15 12h1v1h-1zM18 12h4v1h-4zM2 13h3v1h-3zM6 13h1v1h-1zM11 13h1v1h-1zM17 13h2v1h-2zM20 13h1v1h-1zM2 14h3v1h-3zM6 14h1v1h-1zM8 14h1v1h-1zM13 14h1v1h-1zM15 14h1v1h-1zM18 14h1v1h-1zM20 14h1v1h-1zM22 14h1v1h-1zM10 15h1v1h-1zM13 15h4v1h-4zM19 15h1v1h-1zM22 15h1v1h-1zM2 16h7v1h-7zM12 16h1v1h-1zM14 16h1v1h-1zM16 16h2v1h-2zM21 16h1v1h-1zM2 17h1v1h-1zM8 17h1v1h-1zM10 17h7v1h-7zM19 17h1v1h-1zM22 17h1v1h-1zM2 18h1v1h-1zM4 18h3v1h-3zM8 18h1v1h-1zM10 18h1v1h-1zM14 18h1v1h-1zM17 18h1v1h-1zM20 18h1v1h-1zM2 19h1v1h-1zM4 19h3v1h-3zM8 19h1v1h-1zM10 19h3v1h-3zM14 19h1v1h-1zM17 19h1v1h-1zM20 19h1v1h-1zM2 20h1v1h-1zM4 20h3v1h-3zM8 20h1v1h-1zM10 20h1v1h-1zM13 20h1v1h-1zM15 20h1v1h-1zM18 20h3v1h-3zM2 21h1v1h-1zM8 21h1v1h-1zM11 21h2v1h-2zM17 21h2v1h-2zM20 21h1v1h-1zM2 22h7v1h-7zM10 22h1v1h-1zM12 22h2v1h-2zM15 22h1v1h-1zM18 22h4v1h-4z\"/></svg>"
+       },
+       "text/html": {
+        "schema": {
+         "type": "string"
+        },
+        "example": "<!doctype html>...<img src=\"data:image/png;base64,...\">...</html>"
+       }
+      }
+     },
+     "400": {
+      "description": "Bad parameters. With format=html the error is an HTML page for a person; otherwise the JSON Error.",
+      "content": {
+       "application/json": {
+        "schema": {
+         "$ref": "#/components/schemas/Error"
+        }
+       },
+       "text/html": {
+        "schema": {
+         "type": "string"
+        }
+       }
+      }
+     }
+    }
+   }
+  }
+ }
+}

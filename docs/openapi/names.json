@@ -1,0 +1,349 @@
+{
+ "tag": {
+  "name": "names",
+  "description": "Regional personas for test data: a female and a male name sharing a surname, with ASCII-folded forms. Repeatable with seed. 15 regions, in memory."
+ },
+ "paths": {
+  "/names/get": {
+   "get": {
+    "tags": [
+     "names"
+    ],
+    "operationId": "namesGet",
+    "summary": "A female and a male persona for a region",
+    "description": "Returns a female persona and a male persona (first, middle, last and composed full name) sharing one surname, drawn from curated in-memory lists for the chosen region. Every name field is also returned ASCII-folded under ascii, so a single call gives you both the true form and the folded one - useful for asserting that a system under test handles diacritics rather than silently mangling them; hasDiacritics says whether they differ. Poland's surnames inflect for women (Kowalski / Kowalska), flagged with genderedSurname. Japan and China write the family name first, flagged with familyNameFirst; a middle name is still returned for systems that demand one but is not part of the composed full name. Names only - no addresses, dates of birth or identifiers.",
+    "parameters": [
+     {
+      "name": "region",
+      "in": "query",
+      "required": false,
+      "schema": {
+       "type": "string"
+      },
+      "description": "Region code, case-insensitive. One of AU NZ GB IE US CA DE FR ES IT NL PL IN CN JP, or ANY for no preference - see names/regions. Required unless notregion is supplied instead. An unknown code is a 404.",
+      "example": "AU"
+     },
+     {
+      "name": "notregion",
+      "in": "query",
+      "required": false,
+      "schema": {
+       "type": "string"
+      },
+      "description": "The inverse of region: choose a region at random from everywhere EXCEPT these. Comma-separated, so notregion=AU,NZ,GB excludes all three. Mutually exclusive with region. An unrecognised code is a 404 rather than a silent no-op. The response echoes excludedRegions and chosenFrom.",
+      "example": "AU,NZ,GB"
+     },
+     {
+      "name": "seed",
+      "in": "query",
+      "required": false,
+      "schema": {
+       "type": "string"
+      },
+      "description": "Any string. The same seed always returns the same people - and with notregion or region=ANY the same region too, because the region is drawn from the seeded generator as well. Omit for a fresh random draw.",
+      "example": "run-0037"
+     }
+    ],
+    "responses": {
+     "200": {
+      "description": "OK",
+      "content": {
+       "application/json": {
+        "schema": {
+         "type": "object",
+         "required": [
+          "region",
+          "regionName",
+          "familyNameFirst",
+          "genderedSurname",
+          "femaleFirstName",
+          "femaleMiddleName",
+          "femaleLastName",
+          "femaleFullName",
+          "maleFirstName",
+          "maleMiddleName",
+          "maleLastName",
+          "maleFullName",
+          "hasDiacritics",
+          "ascii",
+          "seed"
+         ],
+         "properties": {
+          "region": {
+           "type": "string"
+          },
+          "regionName": {
+           "type": "string"
+          },
+          "familyNameFirst": {
+           "type": "boolean"
+          },
+          "genderedSurname": {
+           "type": "boolean"
+          },
+          "femaleFirstName": {
+           "type": "string"
+          },
+          "femaleMiddleName": {
+           "type": "string"
+          },
+          "femaleLastName": {
+           "type": "string"
+          },
+          "femaleFullName": {
+           "type": "string"
+          },
+          "maleFirstName": {
+           "type": "string"
+          },
+          "maleMiddleName": {
+           "type": "string"
+          },
+          "maleLastName": {
+           "type": "string"
+          },
+          "maleFullName": {
+           "type": "string"
+          },
+          "hasDiacritics": {
+           "type": "boolean"
+          },
+          "ascii": {
+           "type": "object",
+           "required": [
+            "femaleFirstName",
+            "femaleMiddleName",
+            "femaleLastName",
+            "femaleFullName",
+            "maleFirstName",
+            "maleMiddleName",
+            "maleLastName",
+            "maleFullName"
+           ],
+           "properties": {
+            "femaleFirstName": {
+             "type": "string"
+            },
+            "femaleMiddleName": {
+             "type": "string"
+            },
+            "femaleLastName": {
+             "type": "string"
+            },
+            "femaleFullName": {
+             "type": "string"
+            },
+            "maleFirstName": {
+             "type": "string"
+            },
+            "maleMiddleName": {
+             "type": "string"
+            },
+            "maleLastName": {
+             "type": "string"
+            },
+            "maleFullName": {
+             "type": "string"
+            }
+           }
+          },
+          "seed": {
+           "type": "string",
+           "nullable": true
+          },
+          "excludedRegions": {
+           "type": "array",
+           "items": {
+            "type": "string"
+           }
+          },
+          "chosenFrom": {
+           "type": "integer"
+          },
+          "comment": {
+           "type": "string"
+          }
+         }
+        },
+        "examples": {
+         "region": {
+          "value": {
+           "region": "PL",
+           "regionName": "Poland",
+           "familyNameFirst": false,
+           "genderedSurname": true,
+           "femaleFirstName": "Teresa",
+           "femaleMiddleName": "Blanka",
+           "femaleLastName": "Kamińska",
+           "femaleFullName": "Teresa Blanka Kamińska",
+           "maleFirstName": "Przybysław",
+           "maleMiddleName": "Rafał",
+           "maleLastName": "Kamiński",
+           "maleFullName": "Przybysław Rafał Kamiński",
+           "hasDiacritics": true,
+           "ascii": {
+            "femaleFirstName": "Teresa",
+            "femaleMiddleName": "Blanka",
+            "femaleLastName": "Kaminska",
+            "femaleFullName": "Teresa Blanka Kaminska",
+            "maleFirstName": "Przybyslaw",
+            "maleMiddleName": "Rafal",
+            "maleLastName": "Kaminski",
+            "maleFullName": "Przybyslaw Rafal Kaminski"
+           },
+           "seed": "run-0037"
+          }
+         },
+         "notregion": {
+          "value": {
+           "region": "IT",
+           "regionName": "Italy",
+           "familyNameFirst": false,
+           "genderedSurname": false,
+           "excludedRegions": [
+            "AU",
+            "GB",
+            "NZ"
+           ],
+           "chosenFrom": 12,
+           "femaleFirstName": "Laura",
+           "femaleMiddleName": "Bruna",
+           "femaleLastName": "Valli",
+           "femaleFullName": "Laura Bruna Valli",
+           "maleFirstName": "Benedetto",
+           "maleMiddleName": "Baldassare",
+           "maleLastName": "Valli",
+           "maleFullName": "Benedetto Baldassare Valli",
+           "hasDiacritics": false,
+           "ascii": {
+            "femaleFirstName": "Laura",
+            "femaleMiddleName": "Bruna",
+            "femaleLastName": "Valli",
+            "femaleFullName": "Laura Bruna Valli",
+            "maleFirstName": "Benedetto",
+            "maleMiddleName": "Baldassare",
+            "maleLastName": "Valli",
+            "maleFullName": "Benedetto Baldassare Valli"
+           },
+           "seed": "golden"
+          }
+         }
+        }
+       }
+      }
+     },
+     "400": {
+      "$ref": "#/components/responses/Error"
+     },
+     "404": {
+      "$ref": "#/components/responses/Error"
+     }
+    }
+   }
+  },
+  "/names/regions": {
+   "get": {
+    "tags": [
+     "names"
+    ],
+    "operationId": "namesRegions",
+    "summary": "List the available regions and their list sizes",
+    "description": "Region codes with the number of female given, male given and family names held for each, plus the resulting combination count, whether the family name is written first, and whether surnames inflect by gender. List sizes vary by region because they are curated rather than padded. (Example shows the first two of 15.)",
+    "parameters": [],
+    "responses": {
+     "200": {
+      "description": "OK",
+      "content": {
+       "application/json": {
+        "schema": {
+         "type": "object",
+         "required": [
+          "count",
+          "regions",
+          "comment"
+         ],
+         "properties": {
+          "count": {
+           "type": "integer"
+          },
+          "regions": {
+           "type": "array",
+           "items": {
+            "type": "object",
+            "required": [
+             "region",
+             "regionName",
+             "femaleFirstNames",
+             "maleFirstNames",
+             "lastNames",
+             "familyNameFirst",
+             "genderedSurnames",
+             "combinations"
+            ],
+            "properties": {
+             "region": {
+              "type": "string"
+             },
+             "regionName": {
+              "type": "string"
+             },
+             "femaleFirstNames": {
+              "type": "integer"
+             },
+             "maleFirstNames": {
+              "type": "integer"
+             },
+             "lastNames": {
+              "type": "integer"
+             },
+             "familyNameFirst": {
+              "type": "boolean"
+             },
+             "genderedSurnames": {
+              "type": "boolean"
+             },
+             "combinations": {
+              "type": "integer"
+             }
+            }
+           }
+          },
+          "comment": {
+           "type": "string"
+          }
+         }
+        },
+        "example": {
+         "count": 15,
+         "regions": [
+          {
+           "region": "AU",
+           "regionName": "Australia",
+           "femaleFirstNames": 194,
+           "maleFirstNames": 180,
+           "lastNames": 209,
+           "familyNameFirst": false,
+           "genderedSurnames": false,
+           "combinations": 7298280
+          },
+          {
+           "region": "NZ",
+           "regionName": "New Zealand",
+           "femaleFirstNames": 135,
+           "maleFirstNames": 120,
+           "lastNames": 134,
+           "familyNameFirst": false,
+           "genderedSurnames": false,
+           "combinations": 2170800
+          }
+         ],
+         "comment": "use names/get?region=CODE, region=ANY, or notregion=CODE,CODE"
+        }
+       }
+      }
+     }
+    }
+   }
+  }
+ }
+}

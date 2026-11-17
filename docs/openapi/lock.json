@@ -1,0 +1,197 @@
+{
+ "tag": {
+  "name": "lock",
+  "description": "Short-lived (60 s, no renew) mutual exclusion between concurrent test scripts that share one resource. Contention is 200 with locked:false."
+ },
+ "paths": {
+  "/lock/acquire": {
+   "get": {
+    "tags": [
+     "lock"
+    ],
+    "operationId": "lockAcquire",
+    "summary": "Take a short-lived lock on a shared resource",
+    "description": "Serialises access to something several concurrent scripts share and only one may use at a time - a test account, a device, a single-use inbox, a rate-limited sandbox. Returns locked:true with a ref (and a ready-made releaseUrl), or locked:false if another script holds it. A lock always expires 60 seconds after it was taken; there is no renew and the caller cannot extend it. A busy lock is HTTP 200 with locked:false rather than 4xx, so a test runner does not score contention as a failed request - branch on locked, not on the status code.",
+    "parameters": [
+     {
+      "name": "key",
+      "in": "query",
+      "required": true,
+      "schema": {
+       "type": "string",
+       "maxLength": 128
+      },
+      "description": "Whatever the scripts agree to contend on, usually an identifier of the shared resource. 1-128 characters: letters, digits and . _ - : @ + =, starting with a letter, digit or +. Case-sensitive.",
+      "example": "test-account-07"
+     },
+     {
+      "name": "wait",
+      "in": "query",
+      "required": false,
+      "schema": {
+       "type": "integer",
+       "default": 0,
+       "minimum": 0,
+       "maximum": 20
+      },
+      "description": "Seconds to hold the request open waiting for the lock, 0-20 (clamped; API Gateway abandons a request at 29 s). Default 0 = answer immediately. A waiter picks the lock up within about a quarter second of the holder releasing. Each waiting call occupies a Lambda execution for its whole duration, so this is for functional and pipeline scripts, not for high-volume load.",
+      "example": 20
+     }
+    ],
+    "responses": {
+     "200": {
+      "description": "locked:true (you hold it) or locked:false (busy)",
+      "content": {
+       "application/json": {
+        "schema": {
+         "type": "object",
+         "required": [
+          "locked",
+          "key",
+          "ref",
+          "waitedMs",
+          "comment"
+         ],
+         "properties": {
+          "locked": {
+           "type": "boolean"
+          },
+          "key": {
+           "type": "string"
+          },
+          "ref": {
+           "type": "string",
+           "nullable": true
+          },
+          "maxSeconds": {
+           "type": "integer"
+          },
+          "expiresTime": {
+           "type": "integer"
+          },
+          "waitedMs": {
+           "type": "integer"
+          },
+          "releaseUrl": {
+           "type": "string"
+          },
+          "comment": {
+           "type": "string"
+          },
+          "freeInSeconds": {
+           "type": "integer"
+          }
+         }
+        },
+        "examples": {
+         "locked": {
+          "value": {
+           "locked": true,
+           "key": "test-account-07",
+           "ref": "test-account-07:4ecc4935",
+           "maxSeconds": 60,
+           "expiresTime": 1785400080,
+           "waitedMs": 12,
+           "releaseUrl": "https://api.example.com/v1/lock/release?ref=test-account-07%3A4ecc4935",
+           "comment": "release it with https://api.example.com/v1/lock/release?ref=test-account-07%3A4ecc4935"
+          }
+         },
+         "busy": {
+          "value": {
+           "locked": false,
+           "key": "test-account-07",
+           "ref": null,
+           "freeInSeconds": 41,
+           "waitedMs": 20013,
+           "comment": "another script holds this lock; it frees in at most 41 seconds. Call again, or pass wait=SECONDS (max 20) to hold the request open until it frees."
+          }
+         }
+        }
+       }
+      }
+     },
+     "400": {
+      "$ref": "#/components/responses/Error"
+     }
+    }
+   }
+  },
+  "/lock/release": {
+   "get": {
+    "tags": [
+     "lock"
+    ],
+    "operationId": "lockRelease",
+    "summary": "Release a lock you hold",
+    "description": "The ref identifies the lock on its own - it carries its key. Only the current holder can release: if your lock expired and another script took it, this returns released:false with a reason rather than freeing someone else's lock (still HTTP 200). Releasing is optional for correctness (every lock expires after 60 seconds) but releasing promptly is what keeps the other scripts moving.",
+    "parameters": [
+     {
+      "name": "ref",
+      "in": "query",
+      "required": true,
+      "schema": {
+       "type": "string"
+      },
+      "description": "The ref returned by lock/acquire, URL-encoded (it contains \":\" and may contain \"+\", which must be sent as %2B). releaseUrl in the acquire response is already encoded.",
+      "example": "test-account-07:4ecc4935"
+     }
+    ],
+    "responses": {
+     "200": {
+      "description": "released:true, or released:false with a reason",
+      "content": {
+       "application/json": {
+        "schema": {
+         "type": "object",
+         "required": [
+          "released",
+          "key",
+          "ref"
+         ],
+         "properties": {
+          "released": {
+           "type": "boolean"
+          },
+          "key": {
+           "type": "string"
+          },
+          "ref": {
+           "type": "string"
+          },
+          "heldSeconds": {
+           "type": "integer"
+          },
+          "reason": {
+           "type": "string"
+          }
+         }
+        },
+        "examples": {
+         "released": {
+          "value": {
+           "released": true,
+           "key": "test-account-07",
+           "ref": "test-account-07:4ecc4935",
+           "heldSeconds": 7
+          }
+         },
+         "notHolder": {
+          "value": {
+           "released": false,
+           "key": "test-account-07",
+           "ref": "test-account-07:4ecc4935",
+           "reason": "not the current holder - this key is held by another script for another 38 seconds; either your lock expired and was taken, or this ref was never valid"
+          }
+         }
+        }
+       }
+      }
+     },
+     "400": {
+      "$ref": "#/components/responses/Error"
+     }
+    }
+   }
+  }
+ }
+}

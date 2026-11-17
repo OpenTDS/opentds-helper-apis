@@ -1,0 +1,2082 @@
+AWSTemplateFormatVersion: '2010-09-09'
+Description: >-
+  Test Helper API v1 - public helper endpoints for end-to-end and load test
+  automation (lists, names, lock, mail, sms, webhook, totp, qr, perf, voice) served at
+  https://<ApiHostLabel>.<Domain>/v1 with discovery documents at the domain root.
+
+# =============================================================================
+#  DEPLOY: use deploy.ps1 (it packages src/, stages it in S3 and passes the
+#  full parameter set). By hand:
+#
+#    aws cloudformation package --template-file template.yaml `
+#        --s3-bucket <staging-bucket> --s3-prefix testhelper-v1 `
+#        --output-template-file packaged.yaml
+#    aws cloudformation deploy --template-file packaged.yaml `
+#        --stack-name testhelper-v1 --capabilities CAPABILITY_IAM `
+#        --parameter-overrides Domain=<domain> HostedZoneId=<zone-id> ...
+#
+#  Every Lambda function runs from the same code package (src/). Handlers are
+#  <module>.handler. API routing is by proxy resource: /v1/<service>/{proxy+}
+#  -> one function per service; the action is the proxy path.
+#
+#  API GATEWAY DEPLOYMENTS: routes are proxy resources, so adding an ACTION
+#  needs only a code change. Adding or removing a SERVICE (resources/methods)
+#  needs the V1Deployment logical id bumped (V1DeploymentC -> V1DeploymentD),
+#  or the stage keeps serving the old routes with no error.
+#
+#  NO AUTHENTICATION by design. Protection is: stage throttling, the mail
+#  recipient allow-list, the daily voice synthesis budget, S3 lifecycle rules
+#  and size caps in code.
+# =============================================================================
+
+Parameters:
+  Domain:
+    Type: String
+    AllowedPattern: '^[a-z0-9][a-z0-9-]*(\.[a-z0-9][a-z0-9-]*)+$'
+    ConstraintDescription: A bare lower-case domain such as example.com.
+    Description: >-
+      Root domain. The API is https://<ApiHostLabel>.<Domain>/v1 and SES
+      receives mail for <anything>@<Domain>. No default on purpose - a deploy
+      that omits it must fail rather than retarget the stack.
+  HostedZoneId:
+    Type: AWS::Route53::HostedZone::Id
+    Description: Route 53 hosted zone for Domain, in this account.
+  ApiHostLabel:
+    Type: String
+    Default: api
+    AllowedPattern: '^[a-z0-9][a-z0-9-]{0,62}$'
+    Description: Host label for the API (api -> api.<Domain>).
+  BucketPrefix:
+    Type: String
+    Default: testhelper-v1
+    AllowedPattern: '^[a-z0-9][a-z0-9-]{1,16}$'
+    Description: >-
+      Lower-case prefix for S3 bucket names (<prefix>-<purpose>-<account>-<region>).
+      Change it for a second stack in the same account.
+  CreateSesIdentity:
+    Type: String
+    Default: 'true'
+    AllowedValues: ['true', 'false']
+    Description: >-
+      Create the SES domain identity (Easy DKIM, custom MAIL FROM) and its DKIM
+      records. false if the identity already exists in this account/region.
+  ManageMailDnsRecords:
+    Type: String
+    Default: 'true'
+    AllowedValues: ['true', 'false']
+    Description: >-
+      Create the apex MX (inbound mail) and the mail.<Domain> MAIL FROM MX/TXT
+      records. false if they already exist (Route 53 refuses to create a record
+      that is already there).
+  ManageSpfDmarcRecords:
+    Type: String
+    Default: 'true'
+    AllowedValues: ['true', 'false']
+    Description: >-
+      Create the apex SPF TXT and _dmarc TXT records. false if TXT records
+      already exist there - then add include:amazonses.com to the SPF yourself.
+  CreateReceiptRules:
+    Type: String
+    Default: 'true'
+    AllowedValues: ['true', 'false']
+    Description: >-
+      Create the SES receipt rule that stores mail for Domain in the inbound
+      bucket. false if inbound mail for Domain is handled elsewhere.
+  ExistingReceiptRuleSet:
+    Type: String
+    Default: ''
+    Description: >-
+      Only ONE SES receipt rule set can be active per account and region. If
+      another stack already owns the active set, name it here: this stack then
+      adds its rule to that set instead of creating (and activating) its own.
+      Leave empty to create a rule set for this stack.
+  ActivateReceiptRuleSet:
+    Type: String
+    Default: 'true'
+    AllowedValues: ['true', 'false']
+    Description: >-
+      Activate this stack's own rule set (ignored when ExistingReceiptRuleSet is
+      set). The stack FAILS rather than replace a different active set unless
+      ForceActivateReceiptRuleSet is true.
+  ForceActivateReceiptRuleSet:
+    Type: String
+    Default: 'false'
+    AllowedValues: ['true', 'false']
+    Description: Replace a different active receipt rule set deliberately.
+  DmarcPolicy:
+    Type: String
+    Default: none
+    AllowedValues: [none, quarantine, reject]
+    Description: DMARC p= value for _dmarc.<Domain>. none suits a test domain.
+  EmailSendAllowedTo:
+    Type: String
+    Default: ''
+    Description: >-
+      Comma-separated extra recipient ADDRESSES mail/send may deliver to.
+      Addresses at Domain are always allowed.
+  EmailSendAllowedDomains:
+    Type: String
+    Default: ''
+    Description: >-
+      Comma-separated extra recipient DOMAINS mail/send may deliver to.
+      example.com matches that domain only; *.example.com matches any subdomain
+      (not the apex). Keep this short: the endpoint is public.
+  ThrottleRateLimit:
+    Type: Number
+    Default: 500
+    MinValue: 1
+    Description: Steady-state requests per second across the whole v1 API.
+  ThrottleBurstLimit:
+    Type: Number
+    Default: 1000
+    MinValue: 1
+    Description: Burst request limit across the whole v1 API.
+  ServeApexSite:
+    Type: String
+    Default: 'true'
+    AllowedValues: ['true', 'false']
+    Description: >-
+      Also serve the landing page (and /.well-known/*, /llms.txt) at the bare
+      domain https://<Domain>/. false if <Domain> already has an A record or is
+      hosted elsewhere.
+  SmsDeviceKeys:
+    Type: String
+    Default: ''
+    NoEcho: true
+    Description: >-
+      Comma-separated secret keys that capture handsets send in the X-Device-Key
+      header of sms/receive. Two keys allow rotation (add new, update phones,
+      drop old). Empty disables sms/receive. deploy.ps1 keeps these in a local,
+      git-ignored sms-device-keys.txt.
+  SmsSendAllowedNumbers:
+    Type: String
+    Default: ''
+    Description: >-
+      Comma-separated E.164 numbers of the registered handsets sms/send may text.
+      Matched on the last nine digits. Empty disables real sends (sms/mocksend
+      still works). Mock messages are refused for these numbers.
+  SmsRegion:
+    Type: String
+    Default: ap-southeast-2
+    Description: >-
+      Region whose SNS sends the real texts - where the account's SNS SMS
+      production access and spend limit are configured.
+  SmsSendIntervalSeconds:
+    Type: Number
+    Default: 10
+    MinValue: 0
+    Description: Minimum seconds between real texts to the same handset (0 = no limit).
+  WebhookRetentionDays:
+    Type: Number
+    Default: 30
+    MinValue: 1
+    Description: Days a captured webhook is kept (DynamoDB TTL).
+  VoiceRegion:
+    Type: String
+    Default: ap-southeast-2
+    Description: >-
+      Region whose Amazon Polly speaks for voice/say. It need not be the stack's
+      region: the neural and generative engines are not offered everywhere
+      (us-west-1 has neither; us-west-2 and ap-southeast-2 have both).
+  VoiceName:
+    Type: String
+    Default: Olivia
+    AllowedPattern: '^[A-Za-z]{2,20}$'
+    Description: The Polly voice voice/say uses when the caller names none.
+  VoiceEngine:
+    Type: String
+    Default: neural
+    AllowedValues: [standard, neural, generative]
+    Description: The Polly engine voice/say uses when the caller names none.
+  VoiceDailyCharacters:
+    Type: Number
+    Default: 25000
+    MinValue: 0
+    Description: >-
+      Characters voice/say may send to Polly per UTC day. Every cache miss is
+      billed per character and the endpoint is open, so new synthesis is capped;
+      stored audio is always served. 0 switches synthesis off. At list prices
+      (USD 16 neural, USD 30 generative per million characters) the default is
+      at most about USD 0.40 to 0.75 a day.
+
+Metadata:
+  AWS::CloudFormation::Interface:
+    ParameterGroups:
+      - Label: { default: Domain }
+        Parameters: [Domain, HostedZoneId, ApiHostLabel, BucketPrefix, ServeApexSite]
+      - Label: { default: Email (SES) }
+        Parameters: [CreateSesIdentity, ManageMailDnsRecords, ManageSpfDmarcRecords,
+                     CreateReceiptRules,
+                     ExistingReceiptRuleSet, ActivateReceiptRuleSet,
+                     ForceActivateReceiptRuleSet, DmarcPolicy,
+                     EmailSendAllowedTo, EmailSendAllowedDomains]
+      - Label: { default: Limits }
+        Parameters: [ThrottleRateLimit, ThrottleBurstLimit, WebhookRetentionDays]
+      - Label: { default: Text messages (SMS) }
+        Parameters: [SmsDeviceKeys, SmsSendAllowedNumbers, SmsRegion, SmsSendIntervalSeconds]
+      - Label: { default: Voice }
+        Parameters: [VoiceRegion, VoiceName, VoiceEngine, VoiceDailyCharacters]
+
+Conditions:
+  MakeApexSite: !Equals [!Ref ServeApexSite, 'true']
+  MakeSesIdentity: !Equals [!Ref CreateSesIdentity, 'true']
+  MakeMailDns: !Equals [!Ref ManageMailDnsRecords, 'true']
+  MakeSpfDmarc: !Equals [!Ref ManageSpfDmarcRecords, 'true']
+  MakeReceiptRule: !Equals [!Ref CreateReceiptRules, 'true']
+  UseExistingRuleSet: !Not [!Equals [!Ref ExistingReceiptRuleSet, '']]
+  MakeRuleSet: !And
+    - !Condition MakeReceiptRule
+    - !Not [!Condition UseExistingRuleSet]
+  ActivateRuleSet: !And
+    - !Condition MakeRuleSet
+    - !Equals [!Ref ActivateReceiptRuleSet, 'true']
+
+Resources:
+
+  # ===========================================================================
+  # DOMAIN: certificate, custom domain, DNS, base-path mappings
+  #   (none) -> RootApi : /, /llms.txt, /.well-known/*
+  #   v1     -> V1Api   : /v1/...
+  # ===========================================================================
+  ApiCertificate:
+    Type: AWS::CertificateManager::Certificate
+    Properties:
+      DomainName: !Sub '${ApiHostLabel}.${Domain}'
+      ValidationMethod: DNS
+      DomainValidationOptions:
+        - DomainName: !Sub '${ApiHostLabel}.${Domain}'
+          HostedZoneId: !Ref HostedZoneId
+
+  ApiCustomDomain:
+    Type: AWS::ApiGateway::DomainName
+    Properties:
+      DomainName: !Sub '${ApiHostLabel}.${Domain}'
+      RegionalCertificateArn: !Ref ApiCertificate
+      EndpointConfiguration:
+        Types: [REGIONAL]
+      SecurityPolicy: TLS_1_2
+
+  ApiDnsRecord:
+    Type: AWS::Route53::RecordSet
+    Properties:
+      HostedZoneId: !Ref HostedZoneId
+      Name: !Sub '${ApiHostLabel}.${Domain}'
+      Type: A
+      AliasTarget:
+        DNSName: !GetAtt ApiCustomDomain.RegionalDomainName
+        HostedZoneId: !GetAtt ApiCustomDomain.RegionalHostedZoneId
+
+  RootBasePathMapping:
+    Type: AWS::ApiGateway::BasePathMapping
+    Properties:
+      DomainName: !Ref ApiCustomDomain
+      RestApiId: !Ref RootApi
+      Stage: !Ref RootStage
+
+  # The bare domain serves the same RootApi: landing page, llms.txt, .well-known.
+  ApexCertificate:
+    Type: AWS::CertificateManager::Certificate
+    Condition: MakeApexSite
+    Properties:
+      DomainName: !Ref Domain
+      ValidationMethod: DNS
+      DomainValidationOptions:
+        - DomainName: !Ref Domain
+          HostedZoneId: !Ref HostedZoneId
+
+  ApexCustomDomain:
+    Type: AWS::ApiGateway::DomainName
+    Condition: MakeApexSite
+    Properties:
+      DomainName: !Ref Domain
+      RegionalCertificateArn: !Ref ApexCertificate
+      EndpointConfiguration:
+        Types: [REGIONAL]
+      SecurityPolicy: TLS_1_2
+
+  ApexDnsRecord:
+    Type: AWS::Route53::RecordSet
+    Condition: MakeApexSite
+    Properties:
+      HostedZoneId: !Ref HostedZoneId
+      Name: !Ref Domain
+      Type: A
+      AliasTarget:
+        DNSName: !GetAtt ApexCustomDomain.RegionalDomainName
+        HostedZoneId: !GetAtt ApexCustomDomain.RegionalHostedZoneId
+
+  ApexBasePathMapping:
+    Type: AWS::ApiGateway::BasePathMapping
+    Condition: MakeApexSite
+    Properties:
+      DomainName: !Ref ApexCustomDomain
+      RestApiId: !Ref RootApi
+      Stage: !Ref RootStage
+
+  # Chained after the root mapping: API Gateway rejects concurrent updates to
+  # one custom domain.
+  V1BasePathMapping:
+    Type: AWS::ApiGateway::BasePathMapping
+    DependsOn: RootBasePathMapping
+    Properties:
+      DomainName: !Ref ApiCustomDomain
+      BasePath: v1
+      RestApiId: !Ref V1Api
+      Stage: !Ref V1Stage
+
+  # ===========================================================================
+  # STORAGE. Tables and buckets are Retain: deleting the stack keeps the data.
+  # ===========================================================================
+  ListsTable:
+    Type: AWS::DynamoDB::Table
+    DeletionPolicy: Retain
+    UpdateReplacePolicy: Retain
+    Properties:
+      BillingMode: PAY_PER_REQUEST
+      AttributeDefinitions:
+        - { AttributeName: key, AttributeType: S }
+        - { AttributeName: index, AttributeType: N }
+      KeySchema:
+        - { AttributeName: key, KeyType: HASH }
+        - { AttributeName: index, KeyType: RANGE }
+
+  ListsVarsTable:
+    Type: AWS::DynamoDB::Table
+    DeletionPolicy: Retain
+    UpdateReplacePolicy: Retain
+    Properties:
+      BillingMode: PAY_PER_REQUEST
+      AttributeDefinitions:
+        - { AttributeName: key, AttributeType: S }
+        - { AttributeName: name, AttributeType: S }
+      KeySchema:
+        - { AttributeName: key, KeyType: HASH }
+        - { AttributeName: name, KeyType: RANGE }
+
+  ListsCountersTable:
+    Type: AWS::DynamoDB::Table
+    DeletionPolicy: Retain
+    UpdateReplacePolicy: Retain
+    Properties:
+      BillingMode: PAY_PER_REQUEST
+      AttributeDefinitions:
+        - { AttributeName: key, AttributeType: S }
+        - { AttributeName: name, AttributeType: S }
+      KeySchema:
+        - { AttributeName: key, KeyType: HASH }
+        - { AttributeName: name, KeyType: RANGE }
+
+  ListsCleanupTable:
+    Type: AWS::DynamoDB::Table
+    DeletionPolicy: Retain
+    UpdateReplacePolicy: Retain
+    Properties:
+      BillingMode: PAY_PER_REQUEST
+      AttributeDefinitions:
+        - { AttributeName: key, AttributeType: S }
+        - { AttributeName: index, AttributeType: N }
+      KeySchema:
+        - { AttributeName: key, KeyType: HASH }
+        - { AttributeName: index, KeyType: RANGE }
+
+  MailTable:
+    Type: AWS::DynamoDB::Table
+    DeletionPolicy: Retain
+    UpdateReplacePolicy: Retain
+    Properties:
+      BillingMode: PAY_PER_REQUEST
+      AttributeDefinitions:
+        - { AttributeName: EmailAddress, AttributeType: S }
+        - { AttributeName: Serial, AttributeType: N }
+      KeySchema:
+        - { AttributeName: EmailAddress, KeyType: HASH }
+        - { AttributeName: Serial, KeyType: RANGE }
+
+  WebhookTable:
+    Type: AWS::DynamoDB::Table
+    DeletionPolicy: Retain
+    UpdateReplacePolicy: Retain
+    Properties:
+      BillingMode: PAY_PER_REQUEST
+      AttributeDefinitions:
+        - { AttributeName: key, AttributeType: S }
+        - { AttributeName: seq, AttributeType: S }
+      KeySchema:
+        - { AttributeName: key, KeyType: HASH }
+        - { AttributeName: seq, KeyType: RANGE }
+      TimeToLiveSpecification:
+        AttributeName: ttl
+        Enabled: true
+
+  TotpTable:
+    Type: AWS::DynamoDB::Table
+    DeletionPolicy: Retain
+    UpdateReplacePolicy: Retain
+    Properties:
+      BillingMode: PAY_PER_REQUEST
+      AttributeDefinitions:
+        - { AttributeName: key, AttributeType: S }
+        - { AttributeName: user, AttributeType: S }
+      KeySchema:
+        - { AttributeName: key, KeyType: HASH }
+        - { AttributeName: user, KeyType: RANGE }
+
+  LockTable:
+    Type: AWS::DynamoDB::Table
+    Properties:
+      BillingMode: PAY_PER_REQUEST
+      AttributeDefinitions:
+        - { AttributeName: LockKey, AttributeType: S }
+      KeySchema:
+        - { AttributeName: LockKey, KeyType: HASH }
+      TimeToLiveSpecification:
+        AttributeName: GcAt
+        Enabled: true
+
+  PerfTable:
+    Type: AWS::DynamoDB::Table
+    DeletionPolicy: Retain
+    UpdateReplacePolicy: Retain
+    Properties:
+      BillingMode: PAY_PER_REQUEST
+      AttributeDefinitions:
+        - { AttributeName: PK, AttributeType: S }
+        - { AttributeName: SK, AttributeType: S }
+      KeySchema:
+        - { AttributeName: PK, KeyType: HASH }
+        - { AttributeName: SK, KeyType: RANGE }
+      TimeToLiveSpecification:
+        AttributeName: ttl
+        Enabled: true
+
+  # Service = a number's last nine digits; Received = epoch-ms sort key. The
+  # ByDay index lets sms/list sweep every number with a Query, not a Scan.
+  SmsTable:
+    Type: AWS::DynamoDB::Table
+    DeletionPolicy: Retain
+    UpdateReplacePolicy: Retain
+    Properties:
+      BillingMode: PAY_PER_REQUEST
+      AttributeDefinitions:
+        - { AttributeName: Service, AttributeType: S }
+        - { AttributeName: Received, AttributeType: S }
+        - { AttributeName: Day, AttributeType: S }
+      KeySchema:
+        - { AttributeName: Service, KeyType: HASH }
+        - { AttributeName: Received, KeyType: RANGE }
+      GlobalSecondaryIndexes:
+        - IndexName: ByDay
+          KeySchema:
+            - { AttributeName: Day, KeyType: HASH }
+            - { AttributeName: Received, KeyType: RANGE }
+          Projection: { ProjectionType: ALL }
+      TimeToLiveSpecification:
+        AttributeName: ttl
+        Enabled: true
+
+  # voice: PK 'budget' / SK <UTC day> counts the characters sent to Polly that day.
+  VoiceTable:
+    Type: AWS::DynamoDB::Table
+    DeletionPolicy: Retain
+    UpdateReplacePolicy: Retain
+    Properties:
+      BillingMode: PAY_PER_REQUEST
+      AttributeDefinitions:
+        - { AttributeName: PK, AttributeType: S }
+        - { AttributeName: SK, AttributeType: S }
+      KeySchema:
+        - { AttributeName: PK, KeyType: HASH }
+        - { AttributeName: SK, KeyType: RANGE }
+      TimeToLiveSpecification:
+        AttributeName: ttl
+        Enabled: true
+
+  ListsImportBucket:
+    Type: AWS::S3::Bucket
+    DeletionPolicy: Retain
+    UpdateReplacePolicy: Retain
+    Properties:
+      BucketName: !Sub '${BucketPrefix}-imports-${AWS::AccountId}-${AWS::Region}'
+      PublicAccessBlockConfiguration:
+        BlockPublicAcls: true
+        BlockPublicPolicy: true
+        IgnorePublicAcls: true
+        RestrictPublicBuckets: true
+      BucketEncryption:
+        ServerSideEncryptionConfiguration:
+          - ServerSideEncryptionByDefault: { SSEAlgorithm: AES256 }
+      # Uploaded files (and their .status.json) are kept 90 days so a key can
+      # be reloaded from the same file by ref.
+      LifecycleConfiguration:
+        Rules:
+          - Id: expire-imports
+            Status: Enabled
+            Prefix: imports/
+            ExpirationInDays: 90
+          - Id: abort-incomplete-uploads
+            Status: Enabled
+            AbortIncompleteMultipartUpload: { DaysAfterInitiation: 1 }
+      # The upload page POSTs files straight to S3 (presigned POST).
+      CorsConfiguration:
+        CorsRules:
+          - AllowedMethods: [POST]
+            AllowedOrigins: [!Sub 'https://${ApiHostLabel}.${Domain}']
+            AllowedHeaders: ['*']
+            ExposedHeaders: [ETag, Location]
+            MaxAge: 3000
+
+  MailAttachmentBucket:
+    Type: AWS::S3::Bucket
+    DeletionPolicy: Retain
+    UpdateReplacePolicy: Retain
+    Properties:
+      BucketName: !Sub '${BucketPrefix}-mail-attachments-${AWS::AccountId}-${AWS::Region}'
+      PublicAccessBlockConfiguration:
+        BlockPublicAcls: true
+        BlockPublicPolicy: true
+        IgnorePublicAcls: true
+        RestrictPublicBuckets: true
+      BucketEncryption:
+        ServerSideEncryptionConfiguration:
+          - ServerSideEncryptionByDefault: { SSEAlgorithm: AES256 }
+      LifecycleConfiguration:
+        Rules:
+          - Id: abort-incomplete-uploads
+            Status: Enabled
+            AbortIncompleteMultipartUpload: { DaysAfterInitiation: 1 }
+          # Unprotected copies made by attachments/get?password= - served once, then expire.
+          - Id: expire-unlocked-copies
+            Status: Enabled
+            Prefix: _unlocked/
+            ExpirationInDays: 1
+      # Upload page POSTs to S3; large downloads use presigned GETs.
+      CorsConfiguration:
+        CorsRules:
+          - AllowedMethods: [POST, PUT, GET, HEAD]
+            AllowedOrigins: [!Sub 'https://${ApiHostLabel}.${Domain}']
+            AllowedHeaders: ['*']
+            ExposedHeaders: [ETag, Location]
+            MaxAge: 3000
+
+  # voice audio. generated/ is the content-addressed store behind voice/say:
+  # it expires 30 days after an utterance's LAST use (voice_store rewrites one
+  # in place when it is used again). saved/ is kept until deleted.
+  VoiceBucket:
+    Type: AWS::S3::Bucket
+    DeletionPolicy: Retain
+    UpdateReplacePolicy: Retain
+    Properties:
+      BucketName: !Sub '${BucketPrefix}-voice-${AWS::AccountId}-${AWS::Region}'
+      PublicAccessBlockConfiguration:
+        BlockPublicAcls: true
+        BlockPublicPolicy: true
+        IgnorePublicAcls: true
+        RestrictPublicBuckets: true
+      BucketEncryption:
+        ServerSideEncryptionConfiguration:
+          - ServerSideEncryptionByDefault: { SSEAlgorithm: AES256 }
+      LifecycleConfiguration:
+        Rules:
+          - Id: expire-generated-utterances
+            Status: Enabled
+            Prefix: generated/
+            ExpirationInDays: 30
+          - Id: abort-incomplete-uploads
+            Status: Enabled
+            AbortIncompleteMultipartUpload: { DaysAfterInitiation: 1 }
+      # Presigned GETs are fetched by test pages on any origin (a page feeding
+      # the audio to a voice UI), so reads are open to every origin: the
+      # signature on the URL is the control.
+      CorsConfiguration:
+        CorsRules:
+          - AllowedMethods: [GET, HEAD]
+            AllowedOrigins: ['*']
+            AllowedHeaders: ['*']
+            ExposedHeaders: [ETag]
+            MaxAge: 3000
+
+  # SES writes raw mail to inbound/; MailReceiveFunction extracts attachments
+  # to attachments/<ref>. Both expire after 7 days. The bucket name is literal
+  # (not !Ref) so the Lambda permission and bucket policy can name it without
+  # a circular dependency on the notification configuration.
+  MailInboundBucket:
+    Type: AWS::S3::Bucket
+    DeletionPolicy: Retain
+    UpdateReplacePolicy: Retain
+    DependsOn: MailReceiveInvokePermission
+    Properties:
+      BucketName: !Sub '${BucketPrefix}-mail-inbound-${AWS::AccountId}-${AWS::Region}'
+      PublicAccessBlockConfiguration:
+        BlockPublicAcls: true
+        BlockPublicPolicy: true
+        IgnorePublicAcls: true
+        RestrictPublicBuckets: true
+      BucketEncryption:
+        ServerSideEncryptionConfiguration:
+          - ServerSideEncryptionByDefault: { SSEAlgorithm: AES256 }
+      LifecycleConfiguration:
+        Rules:
+          - Id: expire-raw-mail
+            Status: Enabled
+            Prefix: inbound/
+            ExpirationInDays: 7
+          - Id: expire-received-attachments
+            Status: Enabled
+            Prefix: attachments/
+            ExpirationInDays: 7
+      NotificationConfiguration:
+        LambdaConfigurations:
+          - Event: s3:ObjectCreated:*
+            Filter:
+              S3Key:
+                Rules:
+                  - { Name: prefix, Value: inbound/ }
+            Function: !GetAtt MailReceiveFunction.Arn
+
+  MailInboundBucketPolicy:
+    Type: AWS::S3::BucketPolicy
+    Properties:
+      Bucket: !Ref MailInboundBucket
+      PolicyDocument:
+        Version: '2012-10-17'
+        Statement:
+          - Sid: AllowSesPut
+            Effect: Allow
+            Principal: { Service: ses.amazonaws.com }
+            Action: s3:PutObject
+            Resource: !Sub 'arn:${AWS::Partition}:s3:::${BucketPrefix}-mail-inbound-${AWS::AccountId}-${AWS::Region}/*'
+            Condition:
+              StringEquals:
+                aws:SourceAccount: !Ref AWS::AccountId
+
+  # ===========================================================================
+  # SES: identity (Easy DKIM + custom MAIL FROM), DNS, inbound receipt rule.
+  # Verification is asynchronous: sending/receiving start once SES sees the
+  # DKIM records, usually minutes after CREATE_COMPLETE. New accounts are in
+  # the SES sandbox (verified recipients only) until production access is
+  # granted - see README.
+  # ===========================================================================
+  SesDomainIdentity:
+    Type: AWS::SES::EmailIdentity
+    Condition: MakeSesIdentity
+    Properties:
+      EmailIdentity: !Ref Domain
+      DkimAttributes:
+        SigningEnabled: true
+      MailFromAttributes:
+        MailFromDomain: !Sub 'mail.${Domain}'
+        BehaviorOnMxFailure: USE_DEFAULT_VALUE
+
+  SesDkimRecords:
+    Type: AWS::Route53::RecordSetGroup
+    Condition: MakeSesIdentity
+    Properties:
+      HostedZoneId: !Ref HostedZoneId
+      Comment: !Sub 'Easy DKIM for ${Domain}'
+      RecordSets:
+        - Name: !Sub '${SesDomainIdentity.DkimDNSTokenName1}.'
+          Type: CNAME
+          TTL: '300'
+          ResourceRecords: [!Sub '${SesDomainIdentity.DkimDNSTokenValue1}.']
+        - Name: !Sub '${SesDomainIdentity.DkimDNSTokenName2}.'
+          Type: CNAME
+          TTL: '300'
+          ResourceRecords: [!Sub '${SesDomainIdentity.DkimDNSTokenValue2}.']
+        - Name: !Sub '${SesDomainIdentity.DkimDNSTokenName3}.'
+          Type: CNAME
+          TTL: '300'
+          ResourceRecords: [!Sub '${SesDomainIdentity.DkimDNSTokenValue3}.']
+
+  SesMailRecords:
+    Type: AWS::Route53::RecordSetGroup
+    Condition: MakeMailDns
+    Properties:
+      HostedZoneId: !Ref HostedZoneId
+      Comment: !Sub 'SES inbound MX and MAIL FROM records for ${Domain}'
+      RecordSets:
+        - Name: !Sub '${Domain}.'
+          Type: MX
+          TTL: '300'
+          ResourceRecords: [!Sub '10 inbound-smtp.${AWS::Region}.amazonaws.com']
+        # MAIL FROM subdomain: bounces/complaints come from mail.<Domain> so SPF
+        # aligns. SES forbids receiving on it, hence the feedback MX.
+        - Name: !Sub 'mail.${Domain}.'
+          Type: MX
+          TTL: '300'
+          ResourceRecords: [!Sub '10 feedback-smtp.${AWS::Region}.amazonses.com']
+        - Name: !Sub 'mail.${Domain}.'
+          Type: TXT
+          TTL: '300'
+          ResourceRecords: ['"v=spf1 include:amazonses.com ~all"']
+
+  SesSpfDmarcRecords:
+    Type: AWS::Route53::RecordSetGroup
+    Condition: MakeSpfDmarc
+    Properties:
+      HostedZoneId: !Ref HostedZoneId
+      Comment: !Sub 'SPF and DMARC for ${Domain}'
+      RecordSets:
+        - Name: !Sub '${Domain}.'
+          Type: TXT
+          TTL: '300'
+          ResourceRecords: ['"v=spf1 include:amazonses.com ~all"']
+        - Name: !Sub '_dmarc.${Domain}.'
+          Type: TXT
+          TTL: '300'
+          ResourceRecords: [!Sub '"v=DMARC1; p=${DmarcPolicy};"']
+
+  MailReceiptRuleSet:
+    Type: AWS::SES::ReceiptRuleSet
+    Condition: MakeRuleSet
+    Properties:
+      RuleSetName: !Sub '${AWS::StackName}-inbound'
+
+  # Stores every message for <Domain> under inbound/ in the inbound bucket.
+  # The bucket policy must exist first or SES rejects the action.
+  MailReceiptRule:
+    Type: AWS::SES::ReceiptRule
+    Condition: MakeReceiptRule
+    DependsOn: MailInboundBucketPolicy
+    Properties:
+      RuleSetName: !If [UseExistingRuleSet, !Ref ExistingReceiptRuleSet, !Ref MailReceiptRuleSet]
+      Rule:
+        Name: !Sub '${AWS::StackName}-store-to-s3'
+        Enabled: true
+        ScanEnabled: true
+        TlsPolicy: Optional
+        Recipients: [!Ref Domain]
+        Actions:
+          - S3Action:
+              BucketName: !Ref MailInboundBucket
+              ObjectKeyPrefix: inbound/
+
+  # Activating a rule set is account-level with no CloudFormation resource.
+  SesActivatorRole:
+    Type: AWS::IAM::Role
+    Condition: ActivateRuleSet
+    Properties:
+      AssumeRolePolicyDocument:
+        Version: '2012-10-17'
+        Statement:
+          - Effect: Allow
+            Principal: { Service: lambda.amazonaws.com }
+            Action: sts:AssumeRole
+      ManagedPolicyArns:
+        - !Sub 'arn:${AWS::Partition}:iam::aws:policy/service-role/AWSLambdaBasicExecutionRole'
+      Policies:
+        - PolicyName: ses-activate-rule-set
+          PolicyDocument:
+            Version: '2012-10-17'
+            Statement:
+              # Account-level actions: no resource-level permissions exist.
+              - Effect: Allow
+                Action: [ses:SetActiveReceiptRuleSet, ses:DescribeActiveReceiptRuleSet]
+                Resource: '*'
+
+  SesActivatorFunction:
+    Type: AWS::Lambda::Function
+    Condition: ActivateRuleSet
+    Properties:
+      Runtime: python3.12
+      Handler: ses_activator.handler
+      Code: ./src
+      Role: !GetAtt SesActivatorRole.Arn
+      Timeout: 30
+      MemorySize: 128
+
+  SesActiveRuleSet:
+    Type: Custom::SesActiveReceiptRuleSet
+    Condition: ActivateRuleSet
+    DependsOn: MailReceiptRule
+    Properties:
+      ServiceToken: !GetAtt SesActivatorFunction.Arn
+      RuleSetName: !Ref MailReceiptRuleSet
+      Force: !Ref ForceActivateReceiptRuleSet
+
+  # ===========================================================================
+  # IAM - one role per function, scoped to its own tables and buckets.
+  # ===========================================================================
+  ListsRole:
+    Type: AWS::IAM::Role
+    Properties:
+      AssumeRolePolicyDocument:
+        Version: '2012-10-17'
+        Statement:
+          - Effect: Allow
+            Principal: { Service: lambda.amazonaws.com }
+            Action: sts:AssumeRole
+      ManagedPolicyArns:
+        - !Sub 'arn:${AWS::Partition}:iam::aws:policy/service-role/AWSLambdaBasicExecutionRole'
+      Policies:
+        - PolicyName: service
+          PolicyDocument:
+            Version: '2012-10-17'
+            Statement:
+              - Effect: Allow
+                Action: [dynamodb:GetItem, dynamodb:PutItem, dynamodb:UpdateItem, dynamodb:Query, dynamodb:BatchWriteItem]
+                Resource:
+                  - !GetAtt ListsTable.Arn
+                  - !GetAtt ListsCleanupTable.Arn
+              - Effect: Allow
+                Action: [dynamodb:GetItem, dynamodb:PutItem, dynamodb:UpdateItem, dynamodb:Query]
+                Resource:
+                  - !GetAtt ListsVarsTable.Arn
+                  - !GetAtt ListsCountersTable.Arn
+              - Effect: Allow
+                Action: [s3:GetObject, s3:PutObject]
+                Resource:
+                  - !Sub 'arn:${AWS::Partition}:s3:::${BucketPrefix}-imports-${AWS::AccountId}-${AWS::Region}/imports/*'
+              - Effect: Allow
+                Action: [s3:ListBucket]
+                Resource:
+                  - !Sub 'arn:${AWS::Partition}:s3:::${BucketPrefix}-imports-${AWS::AccountId}-${AWS::Region}'
+              - Effect: Allow
+                Action: [lambda:InvokeFunction]
+                Resource:
+                  - !GetAtt ListsWorkerFunction.Arn
+
+  ListsWorkerRole:
+    Type: AWS::IAM::Role
+    Properties:
+      AssumeRolePolicyDocument:
+        Version: '2012-10-17'
+        Statement:
+          - Effect: Allow
+            Principal: { Service: lambda.amazonaws.com }
+            Action: sts:AssumeRole
+      ManagedPolicyArns:
+        - !Sub 'arn:${AWS::Partition}:iam::aws:policy/service-role/AWSLambdaBasicExecutionRole'
+      Policies:
+        - PolicyName: service
+          PolicyDocument:
+            Version: '2012-10-17'
+            Statement:
+              - Effect: Allow
+                Action: [dynamodb:GetItem, dynamodb:PutItem, dynamodb:UpdateItem, dynamodb:Query, dynamodb:BatchWriteItem]
+                Resource:
+                  - !GetAtt ListsTable.Arn
+              - Effect: Allow
+                Action: [s3:GetObject, s3:PutObject]
+                Resource:
+                  - !Sub 'arn:${AWS::Partition}:s3:::${BucketPrefix}-imports-${AWS::AccountId}-${AWS::Region}/imports/*'
+              - Effect: Allow
+                Action: [s3:ListBucket]
+                Resource:
+                  - !Sub 'arn:${AWS::Partition}:s3:::${BucketPrefix}-imports-${AWS::AccountId}-${AWS::Region}'
+
+  MailRole:
+    Type: AWS::IAM::Role
+    Properties:
+      AssumeRolePolicyDocument:
+        Version: '2012-10-17'
+        Statement:
+          - Effect: Allow
+            Principal: { Service: lambda.amazonaws.com }
+            Action: sts:AssumeRole
+      ManagedPolicyArns:
+        - !Sub 'arn:${AWS::Partition}:iam::aws:policy/service-role/AWSLambdaBasicExecutionRole'
+      Policies:
+        - PolicyName: service
+          PolicyDocument:
+            Version: '2012-10-17'
+            Statement:
+              - Effect: Allow
+                Action: [dynamodb:GetItem, dynamodb:Query, dynamodb:UpdateItem, dynamodb:DeleteItem, dynamodb:BatchWriteItem]
+                Resource:
+                  - !GetAtt MailTable.Arn
+              - Effect: Allow
+                Action: [ses:SendEmail, ses:SendRawEmail]
+                Resource:
+                  - !Sub 'arn:${AWS::Partition}:ses:${AWS::Region}:${AWS::AccountId}:identity/${Domain}'
+                  - !Sub 'arn:${AWS::Partition}:ses:${AWS::Region}:${AWS::AccountId}:identity/*.${Domain}'
+                  - !Sub 'arn:${AWS::Partition}:ses:${AWS::Region}:${AWS::AccountId}:identity/*@${Domain}'
+                  - !Sub 'arn:${AWS::Partition}:ses:${AWS::Region}:${AWS::AccountId}:configuration-set/*'
+              - Effect: Allow
+                Action: [s3:GetObject, s3:PutObject, s3:DeleteObject]
+                Resource:
+                  - !Sub 'arn:${AWS::Partition}:s3:::${BucketPrefix}-mail-attachments-${AWS::AccountId}-${AWS::Region}/*'
+              - Effect: Allow
+                Action: [s3:ListBucket]
+                Resource:
+                  - !Sub 'arn:${AWS::Partition}:s3:::${BucketPrefix}-mail-attachments-${AWS::AccountId}-${AWS::Region}'
+                  - !Sub 'arn:${AWS::Partition}:s3:::${BucketPrefix}-mail-inbound-${AWS::AccountId}-${AWS::Region}'
+              - Effect: Allow
+                Action: [s3:GetObject]
+                Resource:
+                  - !Sub 'arn:${AWS::Partition}:s3:::${BucketPrefix}-mail-inbound-${AWS::AccountId}-${AWS::Region}/attachments/*'
+
+  MailReceiveRole:
+    Type: AWS::IAM::Role
+    Properties:
+      AssumeRolePolicyDocument:
+        Version: '2012-10-17'
+        Statement:
+          - Effect: Allow
+            Principal: { Service: lambda.amazonaws.com }
+            Action: sts:AssumeRole
+      ManagedPolicyArns:
+        - !Sub 'arn:${AWS::Partition}:iam::aws:policy/service-role/AWSLambdaBasicExecutionRole'
+      Policies:
+        - PolicyName: service
+          PolicyDocument:
+            Version: '2012-10-17'
+            Statement:
+              - Effect: Allow
+                Action: [dynamodb:UpdateItem, dynamodb:PutItem]
+                Resource:
+                  - !GetAtt MailTable.Arn
+              - Effect: Allow
+                Action: [s3:GetObject]
+                Resource:
+                  - !Sub 'arn:${AWS::Partition}:s3:::${BucketPrefix}-mail-inbound-${AWS::AccountId}-${AWS::Region}/inbound/*'
+              - Effect: Allow
+                Action: [s3:PutObject]
+                Resource:
+                  - !Sub 'arn:${AWS::Partition}:s3:::${BucketPrefix}-mail-inbound-${AWS::AccountId}-${AWS::Region}/attachments/*'
+
+  WebhookRole:
+    Type: AWS::IAM::Role
+    Properties:
+      AssumeRolePolicyDocument:
+        Version: '2012-10-17'
+        Statement:
+          - Effect: Allow
+            Principal: { Service: lambda.amazonaws.com }
+            Action: sts:AssumeRole
+      ManagedPolicyArns:
+        - !Sub 'arn:${AWS::Partition}:iam::aws:policy/service-role/AWSLambdaBasicExecutionRole'
+      Policies:
+        - PolicyName: service
+          PolicyDocument:
+            Version: '2012-10-17'
+            Statement:
+              - Effect: Allow
+                Action: [dynamodb:PutItem, dynamodb:Query, dynamodb:DeleteItem, dynamodb:BatchWriteItem]
+                Resource:
+                  - !GetAtt WebhookTable.Arn
+
+  TotpRole:
+    Type: AWS::IAM::Role
+    Properties:
+      AssumeRolePolicyDocument:
+        Version: '2012-10-17'
+        Statement:
+          - Effect: Allow
+            Principal: { Service: lambda.amazonaws.com }
+            Action: sts:AssumeRole
+      ManagedPolicyArns:
+        - !Sub 'arn:${AWS::Partition}:iam::aws:policy/service-role/AWSLambdaBasicExecutionRole'
+      Policies:
+        - PolicyName: service
+          PolicyDocument:
+            Version: '2012-10-17'
+            Statement:
+              - Effect: Allow
+                Action: [dynamodb:GetItem, dynamodb:PutItem]
+                Resource:
+                  - !GetAtt TotpTable.Arn
+
+  LockRole:
+    Type: AWS::IAM::Role
+    Properties:
+      AssumeRolePolicyDocument:
+        Version: '2012-10-17'
+        Statement:
+          - Effect: Allow
+            Principal: { Service: lambda.amazonaws.com }
+            Action: sts:AssumeRole
+      ManagedPolicyArns:
+        - !Sub 'arn:${AWS::Partition}:iam::aws:policy/service-role/AWSLambdaBasicExecutionRole'
+      Policies:
+        - PolicyName: service
+          PolicyDocument:
+            Version: '2012-10-17'
+            Statement:
+              - Effect: Allow
+                Action: [dynamodb:GetItem, dynamodb:UpdateItem]
+                Resource:
+                  - !GetAtt LockTable.Arn
+
+  PerfRole:
+    Type: AWS::IAM::Role
+    Properties:
+      AssumeRolePolicyDocument:
+        Version: '2012-10-17'
+        Statement:
+          - Effect: Allow
+            Principal: { Service: lambda.amazonaws.com }
+            Action: sts:AssumeRole
+      ManagedPolicyArns:
+        - !Sub 'arn:${AWS::Partition}:iam::aws:policy/service-role/AWSLambdaBasicExecutionRole'
+      Policies:
+        - PolicyName: service
+          PolicyDocument:
+            Version: '2012-10-17'
+            Statement:
+              - Effect: Allow
+                Action: [dynamodb:GetItem, dynamodb:BatchGetItem, dynamodb:PutItem, dynamodb:UpdateItem, dynamodb:DeleteItem, dynamodb:BatchWriteItem, dynamodb:Query]
+                Resource:
+                  - !GetAtt PerfTable.Arn
+
+  SmsRole:
+    Type: AWS::IAM::Role
+    Properties:
+      AssumeRolePolicyDocument:
+        Version: '2012-10-17'
+        Statement:
+          - Effect: Allow
+            Principal: { Service: lambda.amazonaws.com }
+            Action: sts:AssumeRole
+      ManagedPolicyArns:
+        - !Sub 'arn:${AWS::Partition}:iam::aws:policy/service-role/AWSLambdaBasicExecutionRole'
+      Policies:
+        - PolicyName: service
+          PolicyDocument:
+            Version: '2012-10-17'
+            Statement:
+              - Effect: Allow
+                Action: [dynamodb:GetItem, dynamodb:PutItem, dynamodb:UpdateItem, dynamodb:Query]
+                Resource:
+                  - !GetAtt SmsTable.Arn
+                  - !Sub '${SmsTable.Arn}/index/*'
+              - Effect: Allow
+                Action: [sns:Publish]
+                Resource:
+                  - '*'
+
+  VoiceRole:
+    Type: AWS::IAM::Role
+    Properties:
+      AssumeRolePolicyDocument:
+        Version: '2012-10-17'
+        Statement:
+          - Effect: Allow
+            Principal: { Service: lambda.amazonaws.com }
+            Action: sts:AssumeRole
+      ManagedPolicyArns:
+        - !Sub 'arn:${AWS::Partition}:iam::aws:policy/service-role/AWSLambdaBasicExecutionRole'
+      Policies:
+        - PolicyName: service
+          PolicyDocument:
+            Version: '2012-10-17'
+            Statement:
+              - Effect: Allow
+                Action: [polly:SynthesizeSpeech, polly:DescribeVoices]
+                Resource:
+                  - '*'
+              - Effect: Allow
+                Action: [s3:GetObject, s3:PutObject, s3:DeleteObject]
+                Resource:
+                  - !Sub 'arn:${AWS::Partition}:s3:::${BucketPrefix}-voice-${AWS::AccountId}-${AWS::Region}/*'
+              - Effect: Allow
+                Action: [s3:ListBucket]
+                Resource:
+                  - !Sub 'arn:${AWS::Partition}:s3:::${BucketPrefix}-voice-${AWS::AccountId}-${AWS::Region}'
+              - Effect: Allow
+                Action: [dynamodb:GetItem, dynamodb:UpdateItem]
+                Resource:
+                  - !GetAtt VoiceTable.Arn
+
+  StatelessRole:
+    Type: AWS::IAM::Role
+    Properties:
+      AssumeRolePolicyDocument:
+        Version: '2012-10-17'
+        Statement:
+          - Effect: Allow
+            Principal: { Service: lambda.amazonaws.com }
+            Action: sts:AssumeRole
+      ManagedPolicyArns:
+        - !Sub 'arn:${AWS::Partition}:iam::aws:policy/service-role/AWSLambdaBasicExecutionRole'
+
+  # ===========================================================================
+  # LAMBDA FUNCTIONS - all from the one code package in src/.
+  # Timeouts of 29 s match API Gateway's integration limit (wait= caps at 20).
+  # ===========================================================================
+  ListsFunction:
+    Type: AWS::Lambda::Function
+    Properties:
+      Runtime: nodejs24.x
+      Handler: lists.handler
+      Code: ./src
+      Role: !GetAtt ListsRole.Arn
+      MemorySize: 512
+      Timeout: 29
+      Environment:
+        Variables:
+          BASE_URL: !Sub 'https://${ApiHostLabel}.${Domain}/v1'
+          LISTS_TABLE: !Ref ListsTable
+          VARS_TABLE: !Ref ListsVarsTable
+          COUNTERS_TABLE: !Ref ListsCountersTable
+          CLEANUP_TABLE: !Ref ListsCleanupTable
+          IMPORT_BUCKET: !Ref ListsImportBucket
+          WORKER_FUNCTION: !Ref ListsWorkerFunction
+
+  # Background bulk import and shard cleanup, invoked asynchronously by ListsFunction.
+  ListsWorkerFunction:
+    Type: AWS::Lambda::Function
+    Properties:
+      Runtime: nodejs24.x
+      Handler: lists_import.worker
+      Code: ./src
+      Role: !GetAtt ListsWorkerRole.Arn
+      MemorySize: 1769
+      Timeout: 900
+      Environment:
+        Variables:
+          LISTS_TABLE: !Ref ListsTable
+          IMPORT_BUCKET: !Ref ListsImportBucket
+
+  ListsWorkerInvokeConfig:
+    Type: AWS::Lambda::EventInvokeConfig
+    Properties:
+      FunctionName: !Ref ListsWorkerFunction
+      Qualifier: $LATEST
+      MaximumRetryAttempts: 0
+
+  # Send and attachments: PDF/Office extraction and large MIME builds are CPU-bound.
+  MailFunction:
+    Type: AWS::Lambda::Function
+    Properties:
+      Runtime: python3.12
+      Handler: mail.handler
+      Code: ./src
+      Role: !GetAtt MailRole.Arn
+      MemorySize: 1769
+      Timeout: 29
+      Environment:
+        Variables:
+          BASE_URL: !Sub 'https://${ApiHostLabel}.${Domain}/v1'
+          MAIL_TABLE: !Ref MailTable
+          MAIL_DOMAIN: !Ref Domain
+          INBOUND_BUCKET: !Sub '${BucketPrefix}-mail-inbound-${AWS::AccountId}-${AWS::Region}'
+          ATTACHMENT_BUCKET: !Ref MailAttachmentBucket
+          ALLOWED_TO: !Ref EmailSendAllowedTo
+          ALLOWED_DOMAINS: !Ref EmailSendAllowedDomains
+
+  # Same code as MailFunction, sized for pop/reset/clear - pop?wait=20 holds it open.
+  MailInboxFunction:
+    Type: AWS::Lambda::Function
+    Properties:
+      Runtime: python3.12
+      Handler: mail.handler
+      Code: ./src
+      Role: !GetAtt MailRole.Arn
+      MemorySize: 256
+      Timeout: 29
+      Environment:
+        Variables:
+          BASE_URL: !Sub 'https://${ApiHostLabel}.${Domain}/v1'
+          MAIL_TABLE: !Ref MailTable
+          MAIL_DOMAIN: !Ref Domain
+          INBOUND_BUCKET: !Sub '${BucketPrefix}-mail-inbound-${AWS::AccountId}-${AWS::Region}'
+          ATTACHMENT_BUCKET: !Ref MailAttachmentBucket
+          ALLOWED_TO: !Ref EmailSendAllowedTo
+          ALLOWED_DOMAINS: !Ref EmailSendAllowedDomains
+
+  # S3-triggered: parses mail SES stored under inbound/.
+  MailReceiveFunction:
+    Type: AWS::Lambda::Function
+    Properties:
+      Runtime: python3.12
+      Handler: mail_receive.handler
+      Code: ./src
+      Role: !GetAtt MailReceiveRole.Arn
+      MemorySize: 1024
+      Timeout: 60
+      Environment:
+        Variables:
+          MAIL_TABLE: !Ref MailTable
+          MAIL_DOMAIN: !Ref Domain
+
+  MailReceiveInvokePermission:
+    Type: AWS::Lambda::Permission
+    Properties:
+      FunctionName: !GetAtt MailReceiveFunction.Arn
+      Action: lambda:InvokeFunction
+      Principal: s3.amazonaws.com
+      SourceAccount: !Ref AWS::AccountId
+      SourceArn: !Sub 'arn:${AWS::Partition}:s3:::${BucketPrefix}-mail-inbound-${AWS::AccountId}-${AWS::Region}'
+
+  WebhookFunction:
+    Type: AWS::Lambda::Function
+    Properties:
+      Runtime: python3.12
+      Handler: webhook.handler
+      Code: ./src
+      Role: !GetAtt WebhookRole.Arn
+      MemorySize: 256
+      Timeout: 29
+      Environment:
+        Variables:
+          BASE_URL: !Sub 'https://${ApiHostLabel}.${Domain}/v1'
+          WEBHOOK_TABLE: !Ref WebhookTable
+          WEBHOOK_RETENTION_DAYS: !Ref WebhookRetentionDays
+
+  TotpFunction:
+    Type: AWS::Lambda::Function
+    Properties:
+      Runtime: python3.12
+      Handler: totp.handler
+      Code: ./src
+      Role: !GetAtt TotpRole.Arn
+      MemorySize: 128
+      Timeout: 10
+      Environment:
+        Variables:
+          BASE_URL: !Sub 'https://${ApiHostLabel}.${Domain}/v1'
+          TOTP_TABLE: !Ref TotpTable
+
+  LockFunction:
+    Type: AWS::Lambda::Function
+    Properties:
+      Runtime: python3.12
+      Handler: lock.handler
+      Code: ./src
+      Role: !GetAtt LockRole.Arn
+      MemorySize: 128
+      Timeout: 29
+      Environment:
+        Variables:
+          BASE_URL: !Sub 'https://${ApiHostLabel}.${Domain}/v1'
+          LOCK_TABLE: !Ref LockTable
+
+  PerfFunction:
+    Type: AWS::Lambda::Function
+    Properties:
+      Runtime: python3.12
+      Handler: perf.handler
+      Code: ./src
+      Role: !GetAtt PerfRole.Arn
+      MemorySize: 512
+      Timeout: 29
+      Environment:
+        Variables:
+          BASE_URL: !Sub 'https://${ApiHostLabel}.${Domain}/v1'
+          PERF_TABLE: !Ref PerfTable
+
+  SmsFunction:
+    Type: AWS::Lambda::Function
+    Properties:
+      Runtime: python3.12
+      Handler: sms.handler
+      Code: ./src
+      Role: !GetAtt SmsRole.Arn
+      MemorySize: 128
+      Timeout: 29
+      Environment:
+        Variables:
+          BASE_URL: !Sub 'https://${ApiHostLabel}.${Domain}/v1'
+          SMS_TABLE: !Ref SmsTable
+          SMS_DEVICE_KEYS: !Ref SmsDeviceKeys
+          SMS_ALLOWED_NUMBERS: !Ref SmsSendAllowedNumbers
+          SMS_REGION: !Ref SmsRegion
+          SMS_SEND_INTERVAL: !Ref SmsSendIntervalSeconds
+
+  # Speech comes from Polly in VoiceRegion; the audio is stored in this region.
+  VoiceFunction:
+    Type: AWS::Lambda::Function
+    Properties:
+      Runtime: python3.12
+      Handler: voice.handler
+      Code: ./src
+      Role: !GetAtt VoiceRole.Arn
+      MemorySize: 512
+      Timeout: 29
+      Environment:
+        Variables:
+          BASE_URL: !Sub 'https://${ApiHostLabel}.${Domain}/v1'
+          VOICE_BUCKET: !Ref VoiceBucket
+          VOICE_TABLE: !Ref VoiceTable
+          VOICE_REGION: !Ref VoiceRegion
+          VOICE_NAME: !Ref VoiceName
+          VOICE_ENGINE: !Ref VoiceEngine
+          VOICE_DAILY_CHARACTERS: !Ref VoiceDailyCharacters
+
+  NamesFunction:
+    Type: AWS::Lambda::Function
+    Properties:
+      Runtime: python3.12
+      Handler: names.handler
+      Code: ./src
+      Role: !GetAtt StatelessRole.Arn
+      MemorySize: 256
+      Timeout: 10
+      Environment:
+        Variables:
+          BASE_URL: !Sub 'https://${ApiHostLabel}.${Domain}/v1'
+
+  QrFunction:
+    Type: AWS::Lambda::Function
+    Properties:
+      Runtime: python3.12
+      Handler: qr.handler
+      Code: ./src
+      Role: !GetAtt StatelessRole.Arn
+      MemorySize: 512
+      Timeout: 29
+      Environment:
+        Variables:
+          BASE_URL: !Sub 'https://${ApiHostLabel}.${Domain}/v1'
+
+  DiscoveryFunction:
+    Type: AWS::Lambda::Function
+    Properties:
+      Runtime: python3.12
+      Handler: discovery.handler
+      Code: ./src
+      Role: !GetAtt StatelessRole.Arn
+      MemorySize: 256
+      Timeout: 10
+      Environment:
+        Variables:
+          BASE_URL: !Sub 'https://${ApiHostLabel}.${Domain}/v1'
+          MAIL_DOMAIN: !Ref Domain
+
+  # ===========================================================================
+  # V1 API - /v1/<service> and /v1/<service>/{proxy+}, ANY method, Lambda proxy.
+  # ===========================================================================
+  V1Api:
+    Type: AWS::ApiGateway::RestApi
+    Properties:
+      Name: !Sub '${AWS::StackName}-v1'
+      Description: Test Helper API v1
+      EndpointConfiguration:
+        Types: [REGIONAL]
+      # Bodies of these types reach Lambda byte-exact (base64): CSV imports in
+      # Windows-1252/UTF-16, and binary webhook payloads.
+      BinaryMediaTypes: ['text/csv', 'application/octet-stream']
+      MinimumCompressionSize: 8192
+
+  RootApi:
+    Type: AWS::ApiGateway::RestApi
+    Properties:
+      Name: !Sub '${AWS::StackName}-root'
+      Description: Test Helper API - domain root (llms.txt, /.well-known/*)
+      EndpointConfiguration:
+        Types: [REGIONAL]
+      MinimumCompressionSize: 8192
+
+  V1RootMethod:
+    Type: AWS::ApiGateway::Method
+    Properties:
+      RestApiId: !Ref V1Api
+      ResourceId: !GetAtt V1Api.RootResourceId
+      HttpMethod: ANY
+      AuthorizationType: NONE
+      Integration:
+        Type: AWS_PROXY
+        IntegrationHttpMethod: POST
+        Uri: !Sub 'arn:${AWS::Partition}:apigateway:${AWS::Region}:lambda:path/2015-03-31/functions/${DiscoveryFunction.Arn}/invocations'
+
+  V1ProxyResource:
+    Type: AWS::ApiGateway::Resource
+    Properties:
+      RestApiId: !Ref V1Api
+      ParentId: !GetAtt V1Api.RootResourceId
+      PathPart: '{proxy+}'
+
+  V1ProxyMethod:
+    Type: AWS::ApiGateway::Method
+    Properties:
+      RestApiId: !Ref V1Api
+      ResourceId: !Ref V1ProxyResource
+      HttpMethod: ANY
+      AuthorizationType: NONE
+      Integration:
+        Type: AWS_PROXY
+        IntegrationHttpMethod: POST
+        Uri: !Sub 'arn:${AWS::Partition}:apigateway:${AWS::Region}:lambda:path/2015-03-31/functions/${DiscoveryFunction.Arn}/invocations'
+
+  RootRootMethod:
+    Type: AWS::ApiGateway::Method
+    Properties:
+      RestApiId: !Ref RootApi
+      ResourceId: !GetAtt RootApi.RootResourceId
+      HttpMethod: ANY
+      AuthorizationType: NONE
+      Integration:
+        Type: AWS_PROXY
+        IntegrationHttpMethod: POST
+        Uri: !Sub 'arn:${AWS::Partition}:apigateway:${AWS::Region}:lambda:path/2015-03-31/functions/${DiscoveryFunction.Arn}/invocations'
+
+  RootProxyResource:
+    Type: AWS::ApiGateway::Resource
+    Properties:
+      RestApiId: !Ref RootApi
+      ParentId: !GetAtt RootApi.RootResourceId
+      PathPart: '{proxy+}'
+
+  RootProxyMethod:
+    Type: AWS::ApiGateway::Method
+    Properties:
+      RestApiId: !Ref RootApi
+      ResourceId: !Ref RootProxyResource
+      HttpMethod: ANY
+      AuthorizationType: NONE
+      Integration:
+        Type: AWS_PROXY
+        IntegrationHttpMethod: POST
+        Uri: !Sub 'arn:${AWS::Partition}:apigateway:${AWS::Region}:lambda:path/2015-03-31/functions/${DiscoveryFunction.Arn}/invocations'
+
+  # ---- /v1/lists
+  ListsResource:
+    Type: AWS::ApiGateway::Resource
+    Properties:
+      RestApiId: !Ref V1Api
+      ParentId: !GetAtt V1Api.RootResourceId
+      PathPart: 'lists'
+
+  ListsMethod:
+    Type: AWS::ApiGateway::Method
+    Properties:
+      RestApiId: !Ref V1Api
+      ResourceId: !Ref ListsResource
+      HttpMethod: ANY
+      AuthorizationType: NONE
+      Integration:
+        Type: AWS_PROXY
+        IntegrationHttpMethod: POST
+        Uri: !Sub 'arn:${AWS::Partition}:apigateway:${AWS::Region}:lambda:path/2015-03-31/functions/${ListsFunction.Arn}/invocations'
+
+  ListsProxyResource:
+    Type: AWS::ApiGateway::Resource
+    Properties:
+      RestApiId: !Ref V1Api
+      ParentId: !Ref ListsResource
+      PathPart: '{proxy+}'
+
+  ListsProxyMethod:
+    Type: AWS::ApiGateway::Method
+    Properties:
+      RestApiId: !Ref V1Api
+      ResourceId: !Ref ListsProxyResource
+      HttpMethod: ANY
+      AuthorizationType: NONE
+      Integration:
+        Type: AWS_PROXY
+        IntegrationHttpMethod: POST
+        Uri: !Sub 'arn:${AWS::Partition}:apigateway:${AWS::Region}:lambda:path/2015-03-31/functions/${ListsFunction.Arn}/invocations'
+
+  # ---- /v1/names
+  NamesResource:
+    Type: AWS::ApiGateway::Resource
+    Properties:
+      RestApiId: !Ref V1Api
+      ParentId: !GetAtt V1Api.RootResourceId
+      PathPart: 'names'
+
+  NamesMethod:
+    Type: AWS::ApiGateway::Method
+    Properties:
+      RestApiId: !Ref V1Api
+      ResourceId: !Ref NamesResource
+      HttpMethod: ANY
+      AuthorizationType: NONE
+      Integration:
+        Type: AWS_PROXY
+        IntegrationHttpMethod: POST
+        Uri: !Sub 'arn:${AWS::Partition}:apigateway:${AWS::Region}:lambda:path/2015-03-31/functions/${NamesFunction.Arn}/invocations'
+
+  NamesProxyResource:
+    Type: AWS::ApiGateway::Resource
+    Properties:
+      RestApiId: !Ref V1Api
+      ParentId: !Ref NamesResource
+      PathPart: '{proxy+}'
+
+  NamesProxyMethod:
+    Type: AWS::ApiGateway::Method
+    Properties:
+      RestApiId: !Ref V1Api
+      ResourceId: !Ref NamesProxyResource
+      HttpMethod: ANY
+      AuthorizationType: NONE
+      Integration:
+        Type: AWS_PROXY
+        IntegrationHttpMethod: POST
+        Uri: !Sub 'arn:${AWS::Partition}:apigateway:${AWS::Region}:lambda:path/2015-03-31/functions/${NamesFunction.Arn}/invocations'
+
+  # ---- /v1/lock
+  LockResource:
+    Type: AWS::ApiGateway::Resource
+    Properties:
+      RestApiId: !Ref V1Api
+      ParentId: !GetAtt V1Api.RootResourceId
+      PathPart: 'lock'
+
+  LockMethod:
+    Type: AWS::ApiGateway::Method
+    Properties:
+      RestApiId: !Ref V1Api
+      ResourceId: !Ref LockResource
+      HttpMethod: ANY
+      AuthorizationType: NONE
+      Integration:
+        Type: AWS_PROXY
+        IntegrationHttpMethod: POST
+        Uri: !Sub 'arn:${AWS::Partition}:apigateway:${AWS::Region}:lambda:path/2015-03-31/functions/${LockFunction.Arn}/invocations'
+
+  LockProxyResource:
+    Type: AWS::ApiGateway::Resource
+    Properties:
+      RestApiId: !Ref V1Api
+      ParentId: !Ref LockResource
+      PathPart: '{proxy+}'
+
+  LockProxyMethod:
+    Type: AWS::ApiGateway::Method
+    Properties:
+      RestApiId: !Ref V1Api
+      ResourceId: !Ref LockProxyResource
+      HttpMethod: ANY
+      AuthorizationType: NONE
+      Integration:
+        Type: AWS_PROXY
+        IntegrationHttpMethod: POST
+        Uri: !Sub 'arn:${AWS::Partition}:apigateway:${AWS::Region}:lambda:path/2015-03-31/functions/${LockFunction.Arn}/invocations'
+
+  # ---- /v1/mail
+  MailResource:
+    Type: AWS::ApiGateway::Resource
+    Properties:
+      RestApiId: !Ref V1Api
+      ParentId: !GetAtt V1Api.RootResourceId
+      PathPart: 'mail'
+
+  MailMethod:
+    Type: AWS::ApiGateway::Method
+    Properties:
+      RestApiId: !Ref V1Api
+      ResourceId: !Ref MailResource
+      HttpMethod: ANY
+      AuthorizationType: NONE
+      Integration:
+        Type: AWS_PROXY
+        IntegrationHttpMethod: POST
+        Uri: !Sub 'arn:${AWS::Partition}:apigateway:${AWS::Region}:lambda:path/2015-03-31/functions/${MailFunction.Arn}/invocations'
+
+  MailProxyResource:
+    Type: AWS::ApiGateway::Resource
+    Properties:
+      RestApiId: !Ref V1Api
+      ParentId: !Ref MailResource
+      PathPart: '{proxy+}'
+
+  MailProxyMethod:
+    Type: AWS::ApiGateway::Method
+    Properties:
+      RestApiId: !Ref V1Api
+      ResourceId: !Ref MailProxyResource
+      HttpMethod: ANY
+      AuthorizationType: NONE
+      Integration:
+        Type: AWS_PROXY
+        IntegrationHttpMethod: POST
+        Uri: !Sub 'arn:${AWS::Partition}:apigateway:${AWS::Region}:lambda:path/2015-03-31/functions/${MailFunction.Arn}/invocations'
+
+  # pop/reset/clear go to the small inbox function; static resources win over {proxy+}.
+  MailPopResource:
+    Type: AWS::ApiGateway::Resource
+    Properties:
+      RestApiId: !Ref V1Api
+      ParentId: !Ref MailResource
+      PathPart: 'pop'
+
+  MailPopMethod:
+    Type: AWS::ApiGateway::Method
+    Properties:
+      RestApiId: !Ref V1Api
+      ResourceId: !Ref MailPopResource
+      HttpMethod: ANY
+      AuthorizationType: NONE
+      Integration:
+        Type: AWS_PROXY
+        IntegrationHttpMethod: POST
+        Uri: !Sub 'arn:${AWS::Partition}:apigateway:${AWS::Region}:lambda:path/2015-03-31/functions/${MailInboxFunction.Arn}/invocations'
+
+  MailResetResource:
+    Type: AWS::ApiGateway::Resource
+    Properties:
+      RestApiId: !Ref V1Api
+      ParentId: !Ref MailResource
+      PathPart: 'reset'
+
+  MailResetMethod:
+    Type: AWS::ApiGateway::Method
+    Properties:
+      RestApiId: !Ref V1Api
+      ResourceId: !Ref MailResetResource
+      HttpMethod: ANY
+      AuthorizationType: NONE
+      Integration:
+        Type: AWS_PROXY
+        IntegrationHttpMethod: POST
+        Uri: !Sub 'arn:${AWS::Partition}:apigateway:${AWS::Region}:lambda:path/2015-03-31/functions/${MailInboxFunction.Arn}/invocations'
+
+  MailClearResource:
+    Type: AWS::ApiGateway::Resource
+    Properties:
+      RestApiId: !Ref V1Api
+      ParentId: !Ref MailResource
+      PathPart: 'clear'
+
+  MailClearMethod:
+    Type: AWS::ApiGateway::Method
+    Properties:
+      RestApiId: !Ref V1Api
+      ResourceId: !Ref MailClearResource
+      HttpMethod: ANY
+      AuthorizationType: NONE
+      Integration:
+        Type: AWS_PROXY
+        IntegrationHttpMethod: POST
+        Uri: !Sub 'arn:${AWS::Partition}:apigateway:${AWS::Region}:lambda:path/2015-03-31/functions/${MailInboxFunction.Arn}/invocations'
+
+  # ---- /v1/sms
+  SmsResource:
+    Type: AWS::ApiGateway::Resource
+    Properties:
+      RestApiId: !Ref V1Api
+      ParentId: !GetAtt V1Api.RootResourceId
+      PathPart: 'sms'
+
+  SmsMethod:
+    Type: AWS::ApiGateway::Method
+    Properties:
+      RestApiId: !Ref V1Api
+      ResourceId: !Ref SmsResource
+      HttpMethod: ANY
+      AuthorizationType: NONE
+      Integration:
+        Type: AWS_PROXY
+        IntegrationHttpMethod: POST
+        Uri: !Sub 'arn:${AWS::Partition}:apigateway:${AWS::Region}:lambda:path/2015-03-31/functions/${SmsFunction.Arn}/invocations'
+
+  SmsProxyResource:
+    Type: AWS::ApiGateway::Resource
+    Properties:
+      RestApiId: !Ref V1Api
+      ParentId: !Ref SmsResource
+      PathPart: '{proxy+}'
+
+  SmsProxyMethod:
+    Type: AWS::ApiGateway::Method
+    Properties:
+      RestApiId: !Ref V1Api
+      ResourceId: !Ref SmsProxyResource
+      HttpMethod: ANY
+      AuthorizationType: NONE
+      Integration:
+        Type: AWS_PROXY
+        IntegrationHttpMethod: POST
+        Uri: !Sub 'arn:${AWS::Partition}:apigateway:${AWS::Region}:lambda:path/2015-03-31/functions/${SmsFunction.Arn}/invocations'
+
+  # ---- /v1/voice
+  VoiceResource:
+    Type: AWS::ApiGateway::Resource
+    Properties:
+      RestApiId: !Ref V1Api
+      ParentId: !GetAtt V1Api.RootResourceId
+      PathPart: 'voice'
+
+  VoiceMethod:
+    Type: AWS::ApiGateway::Method
+    Properties:
+      RestApiId: !Ref V1Api
+      ResourceId: !Ref VoiceResource
+      HttpMethod: ANY
+      AuthorizationType: NONE
+      Integration:
+        Type: AWS_PROXY
+        IntegrationHttpMethod: POST
+        Uri: !Sub 'arn:${AWS::Partition}:apigateway:${AWS::Region}:lambda:path/2015-03-31/functions/${VoiceFunction.Arn}/invocations'
+
+  VoiceProxyResource:
+    Type: AWS::ApiGateway::Resource
+    Properties:
+      RestApiId: !Ref V1Api
+      ParentId: !Ref VoiceResource
+      PathPart: '{proxy+}'
+
+  VoiceProxyMethod:
+    Type: AWS::ApiGateway::Method
+    Properties:
+      RestApiId: !Ref V1Api
+      ResourceId: !Ref VoiceProxyResource
+      HttpMethod: ANY
+      AuthorizationType: NONE
+      Integration:
+        Type: AWS_PROXY
+        IntegrationHttpMethod: POST
+        Uri: !Sub 'arn:${AWS::Partition}:apigateway:${AWS::Region}:lambda:path/2015-03-31/functions/${VoiceFunction.Arn}/invocations'
+
+  # ---- /v1/webhook
+  WebhookResource:
+    Type: AWS::ApiGateway::Resource
+    Properties:
+      RestApiId: !Ref V1Api
+      ParentId: !GetAtt V1Api.RootResourceId
+      PathPart: 'webhook'
+
+  WebhookMethod:
+    Type: AWS::ApiGateway::Method
+    Properties:
+      RestApiId: !Ref V1Api
+      ResourceId: !Ref WebhookResource
+      HttpMethod: ANY
+      AuthorizationType: NONE
+      Integration:
+        Type: AWS_PROXY
+        IntegrationHttpMethod: POST
+        Uri: !Sub 'arn:${AWS::Partition}:apigateway:${AWS::Region}:lambda:path/2015-03-31/functions/${WebhookFunction.Arn}/invocations'
+
+  WebhookProxyResource:
+    Type: AWS::ApiGateway::Resource
+    Properties:
+      RestApiId: !Ref V1Api
+      ParentId: !Ref WebhookResource
+      PathPart: '{proxy+}'
+
+  WebhookProxyMethod:
+    Type: AWS::ApiGateway::Method
+    Properties:
+      RestApiId: !Ref V1Api
+      ResourceId: !Ref WebhookProxyResource
+      HttpMethod: ANY
+      AuthorizationType: NONE
+      Integration:
+        Type: AWS_PROXY
+        IntegrationHttpMethod: POST
+        Uri: !Sub 'arn:${AWS::Partition}:apigateway:${AWS::Region}:lambda:path/2015-03-31/functions/${WebhookFunction.Arn}/invocations'
+
+  # ---- /v1/totp
+  TotpResource:
+    Type: AWS::ApiGateway::Resource
+    Properties:
+      RestApiId: !Ref V1Api
+      ParentId: !GetAtt V1Api.RootResourceId
+      PathPart: 'totp'
+
+  TotpMethod:
+    Type: AWS::ApiGateway::Method
+    Properties:
+      RestApiId: !Ref V1Api
+      ResourceId: !Ref TotpResource
+      HttpMethod: ANY
+      AuthorizationType: NONE
+      Integration:
+        Type: AWS_PROXY
+        IntegrationHttpMethod: POST
+        Uri: !Sub 'arn:${AWS::Partition}:apigateway:${AWS::Region}:lambda:path/2015-03-31/functions/${TotpFunction.Arn}/invocations'
+
+  TotpProxyResource:
+    Type: AWS::ApiGateway::Resource
+    Properties:
+      RestApiId: !Ref V1Api
+      ParentId: !Ref TotpResource
+      PathPart: '{proxy+}'
+
+  TotpProxyMethod:
+    Type: AWS::ApiGateway::Method
+    Properties:
+      RestApiId: !Ref V1Api
+      ResourceId: !Ref TotpProxyResource
+      HttpMethod: ANY
+      AuthorizationType: NONE
+      Integration:
+        Type: AWS_PROXY
+        IntegrationHttpMethod: POST
+        Uri: !Sub 'arn:${AWS::Partition}:apigateway:${AWS::Region}:lambda:path/2015-03-31/functions/${TotpFunction.Arn}/invocations'
+
+  # ---- /v1/qr
+  QrResource:
+    Type: AWS::ApiGateway::Resource
+    Properties:
+      RestApiId: !Ref V1Api
+      ParentId: !GetAtt V1Api.RootResourceId
+      PathPart: 'qr'
+
+  QrMethod:
+    Type: AWS::ApiGateway::Method
+    Properties:
+      RestApiId: !Ref V1Api
+      ResourceId: !Ref QrResource
+      HttpMethod: ANY
+      AuthorizationType: NONE
+      Integration:
+        Type: AWS_PROXY
+        IntegrationHttpMethod: POST
+        Uri: !Sub 'arn:${AWS::Partition}:apigateway:${AWS::Region}:lambda:path/2015-03-31/functions/${QrFunction.Arn}/invocations'
+
+  QrProxyResource:
+    Type: AWS::ApiGateway::Resource
+    Properties:
+      RestApiId: !Ref V1Api
+      ParentId: !Ref QrResource
+      PathPart: '{proxy+}'
+
+  QrProxyMethod:
+    Type: AWS::ApiGateway::Method
+    Properties:
+      RestApiId: !Ref V1Api
+      ResourceId: !Ref QrProxyResource
+      HttpMethod: ANY
+      AuthorizationType: NONE
+      Integration:
+        Type: AWS_PROXY
+        IntegrationHttpMethod: POST
+        Uri: !Sub 'arn:${AWS::Partition}:apigateway:${AWS::Region}:lambda:path/2015-03-31/functions/${QrFunction.Arn}/invocations'
+
+  # ---- /v1/perf
+  PerfResource:
+    Type: AWS::ApiGateway::Resource
+    Properties:
+      RestApiId: !Ref V1Api
+      ParentId: !GetAtt V1Api.RootResourceId
+      PathPart: 'perf'
+
+  PerfMethod:
+    Type: AWS::ApiGateway::Method
+    Properties:
+      RestApiId: !Ref V1Api
+      ResourceId: !Ref PerfResource
+      HttpMethod: ANY
+      AuthorizationType: NONE
+      Integration:
+        Type: AWS_PROXY
+        IntegrationHttpMethod: POST
+        Uri: !Sub 'arn:${AWS::Partition}:apigateway:${AWS::Region}:lambda:path/2015-03-31/functions/${PerfFunction.Arn}/invocations'
+
+  PerfProxyResource:
+    Type: AWS::ApiGateway::Resource
+    Properties:
+      RestApiId: !Ref V1Api
+      ParentId: !Ref PerfResource
+      PathPart: '{proxy+}'
+
+  PerfProxyMethod:
+    Type: AWS::ApiGateway::Method
+    Properties:
+      RestApiId: !Ref V1Api
+      ResourceId: !Ref PerfProxyResource
+      HttpMethod: ANY
+      AuthorizationType: NONE
+      Integration:
+        Type: AWS_PROXY
+        IntegrationHttpMethod: POST
+        Uri: !Sub 'arn:${AWS::Partition}:apigateway:${AWS::Region}:lambda:path/2015-03-31/functions/${PerfFunction.Arn}/invocations'
+
+  # ---- invoke permissions (any stage, method and path of the owning API)
+  ListsInvokePermission:
+    Type: AWS::Lambda::Permission
+    Properties:
+      FunctionName: !Ref ListsFunction
+      Action: lambda:InvokeFunction
+      Principal: apigateway.amazonaws.com
+      SourceArn: !Sub 'arn:${AWS::Partition}:execute-api:${AWS::Region}:${AWS::AccountId}:${V1Api}/*'
+
+  NamesInvokePermission:
+    Type: AWS::Lambda::Permission
+    Properties:
+      FunctionName: !Ref NamesFunction
+      Action: lambda:InvokeFunction
+      Principal: apigateway.amazonaws.com
+      SourceArn: !Sub 'arn:${AWS::Partition}:execute-api:${AWS::Region}:${AWS::AccountId}:${V1Api}/*'
+
+  LockInvokePermission:
+    Type: AWS::Lambda::Permission
+    Properties:
+      FunctionName: !Ref LockFunction
+      Action: lambda:InvokeFunction
+      Principal: apigateway.amazonaws.com
+      SourceArn: !Sub 'arn:${AWS::Partition}:execute-api:${AWS::Region}:${AWS::AccountId}:${V1Api}/*'
+
+  MailInvokePermission:
+    Type: AWS::Lambda::Permission
+    Properties:
+      FunctionName: !Ref MailFunction
+      Action: lambda:InvokeFunction
+      Principal: apigateway.amazonaws.com
+      SourceArn: !Sub 'arn:${AWS::Partition}:execute-api:${AWS::Region}:${AWS::AccountId}:${V1Api}/*'
+
+  SmsInvokePermission:
+    Type: AWS::Lambda::Permission
+    Properties:
+      FunctionName: !Ref SmsFunction
+      Action: lambda:InvokeFunction
+      Principal: apigateway.amazonaws.com
+      SourceArn: !Sub 'arn:${AWS::Partition}:execute-api:${AWS::Region}:${AWS::AccountId}:${V1Api}/*'
+
+  VoiceInvokePermission:
+    Type: AWS::Lambda::Permission
+    Properties:
+      FunctionName: !Ref VoiceFunction
+      Action: lambda:InvokeFunction
+      Principal: apigateway.amazonaws.com
+      SourceArn: !Sub 'arn:${AWS::Partition}:execute-api:${AWS::Region}:${AWS::AccountId}:${V1Api}/*'
+
+  WebhookInvokePermission:
+    Type: AWS::Lambda::Permission
+    Properties:
+      FunctionName: !Ref WebhookFunction
+      Action: lambda:InvokeFunction
+      Principal: apigateway.amazonaws.com
+      SourceArn: !Sub 'arn:${AWS::Partition}:execute-api:${AWS::Region}:${AWS::AccountId}:${V1Api}/*'
+
+  TotpInvokePermission:
+    Type: AWS::Lambda::Permission
+    Properties:
+      FunctionName: !Ref TotpFunction
+      Action: lambda:InvokeFunction
+      Principal: apigateway.amazonaws.com
+      SourceArn: !Sub 'arn:${AWS::Partition}:execute-api:${AWS::Region}:${AWS::AccountId}:${V1Api}/*'
+
+  QrInvokePermission:
+    Type: AWS::Lambda::Permission
+    Properties:
+      FunctionName: !Ref QrFunction
+      Action: lambda:InvokeFunction
+      Principal: apigateway.amazonaws.com
+      SourceArn: !Sub 'arn:${AWS::Partition}:execute-api:${AWS::Region}:${AWS::AccountId}:${V1Api}/*'
+
+  PerfInvokePermission:
+    Type: AWS::Lambda::Permission
+    Properties:
+      FunctionName: !Ref PerfFunction
+      Action: lambda:InvokeFunction
+      Principal: apigateway.amazonaws.com
+      SourceArn: !Sub 'arn:${AWS::Partition}:execute-api:${AWS::Region}:${AWS::AccountId}:${V1Api}/*'
+
+  MailInboxInvokePermission:
+    Type: AWS::Lambda::Permission
+    Properties:
+      FunctionName: !Ref MailInboxFunction
+      Action: lambda:InvokeFunction
+      Principal: apigateway.amazonaws.com
+      SourceArn: !Sub 'arn:${AWS::Partition}:execute-api:${AWS::Region}:${AWS::AccountId}:${V1Api}/*'
+
+  DiscoveryV1InvokePermission:
+    Type: AWS::Lambda::Permission
+    Properties:
+      FunctionName: !Ref DiscoveryFunction
+      Action: lambda:InvokeFunction
+      Principal: apigateway.amazonaws.com
+      SourceArn: !Sub 'arn:${AWS::Partition}:execute-api:${AWS::Region}:${AWS::AccountId}:${V1Api}/*'
+
+  DiscoveryRootInvokePermission:
+    Type: AWS::Lambda::Permission
+    Properties:
+      FunctionName: !Ref DiscoveryFunction
+      Action: lambda:InvokeFunction
+      Principal: apigateway.amazonaws.com
+      SourceArn: !Sub 'arn:${AWS::Partition}:execute-api:${AWS::Region}:${AWS::AccountId}:${RootApi}/*'
+
+  V1Default4xxResponse:
+    Type: AWS::ApiGateway::GatewayResponse
+    Properties:
+      RestApiId: !Ref V1Api
+      ResponseType: DEFAULT_4XX
+      ResponseParameters:
+        gatewayresponse.header.Access-Control-Allow-Origin: "'*'"
+        gatewayresponse.header.Access-Control-Allow-Headers: "'*'"
+      ResponseTemplates:
+        application/json: '{"error": $context.error.messageString, "gatewayError": "$context.error.responseType"}'
+
+  V1Default5xxResponse:
+    Type: AWS::ApiGateway::GatewayResponse
+    Properties:
+      RestApiId: !Ref V1Api
+      ResponseType: DEFAULT_5XX
+      ResponseParameters:
+        gatewayresponse.header.Access-Control-Allow-Origin: "'*'"
+        gatewayresponse.header.Access-Control-Allow-Headers: "'*'"
+      ResponseTemplates:
+        application/json: '{"error": $context.error.messageString, "gatewayError": "$context.error.responseType"}'
+
+  RootDefault4xxResponse:
+    Type: AWS::ApiGateway::GatewayResponse
+    Properties:
+      RestApiId: !Ref RootApi
+      ResponseType: DEFAULT_4XX
+      ResponseParameters:
+        gatewayresponse.header.Access-Control-Allow-Origin: "'*'"
+        gatewayresponse.header.Access-Control-Allow-Headers: "'*'"
+      ResponseTemplates:
+        application/json: '{"error": $context.error.messageString, "gatewayError": "$context.error.responseType"}'
+
+  RootDefault5xxResponse:
+    Type: AWS::ApiGateway::GatewayResponse
+    Properties:
+      RestApiId: !Ref RootApi
+      ResponseType: DEFAULT_5XX
+      ResponseParameters:
+        gatewayresponse.header.Access-Control-Allow-Origin: "'*'"
+        gatewayresponse.header.Access-Control-Allow-Headers: "'*'"
+      ResponseTemplates:
+        application/json: '{"error": $context.error.messageString, "gatewayError": "$context.error.responseType"}'
+
+  # Bump this logical id when V1Api resources or methods change.
+  V1DeploymentC:
+    Type: AWS::ApiGateway::Deployment
+    DependsOn: [V1RootMethod, V1ProxyMethod, ListsMethod, ListsProxyMethod, NamesMethod, NamesProxyMethod, LockMethod, LockProxyMethod, MailMethod, MailProxyMethod, MailPopMethod, MailResetMethod, MailClearMethod, SmsMethod, SmsProxyMethod, VoiceMethod, VoiceProxyMethod, WebhookMethod, WebhookProxyMethod, TotpMethod, TotpProxyMethod, QrMethod, QrProxyMethod, PerfMethod, PerfProxyMethod, V1Default4xxResponse, V1Default5xxResponse]
+    Properties:
+      RestApiId: !Ref V1Api
+
+  V1Stage:
+    Type: AWS::ApiGateway::Stage
+    Properties:
+      RestApiId: !Ref V1Api
+      DeploymentId: !Ref V1DeploymentC
+      StageName: live
+      MethodSettings:
+        - ResourcePath: '/*'
+          HttpMethod: '*'
+          ThrottlingRateLimit: !Ref ThrottleRateLimit
+          ThrottlingBurstLimit: !Ref ThrottleBurstLimit
+
+  # Bump this logical id when RootApi resources or methods change.
+  RootDeploymentA:
+    Type: AWS::ApiGateway::Deployment
+    DependsOn: [RootRootMethod, RootProxyMethod, RootDefault4xxResponse, RootDefault5xxResponse]
+    Properties:
+      RestApiId: !Ref RootApi
+
+  RootStage:
+    Type: AWS::ApiGateway::Stage
+    Properties:
+      RestApiId: !Ref RootApi
+      DeploymentId: !Ref RootDeploymentA
+      StageName: live
+      MethodSettings:
+        - ResourcePath: '/*'
+          HttpMethod: '*'
+          ThrottlingRateLimit: !Ref ThrottleRateLimit
+          ThrottlingBurstLimit: !Ref ThrottleBurstLimit
+
+Outputs:
+  BaseUrl:
+    Description: v1 base URL
+    Value: !Sub 'https://${ApiHostLabel}.${Domain}/v1'
+  LlmsGuide:
+    Description: Point an AI assistant here
+    Value: !Sub 'https://${ApiHostLabel}.${Domain}/v1/llms.txt'
+  OpenApi:
+    Description: OpenAPI 3.0.3 (Postman Import > Link)
+    Value: !Sub 'https://${ApiHostLabel}.${Domain}/v1/openapi.json'
+  SiteUrl:
+    Description: Landing page
+    Value: !If [MakeApexSite, !Sub 'https://${Domain}/', !Sub 'https://${ApiHostLabel}.${Domain}/']
+  MailDomain:
+    Description: Addresses at this domain are caught by mail/pop
+    Value: !Ref Domain
+  ListsImportBucketName:
+    Value: !Ref ListsImportBucket
+  MailAttachmentBucketName:
+    Value: !Ref MailAttachmentBucket
+  MailInboundBucketName:
+    Value: !Ref MailInboundBucket
+  MailTableName:
+    Value: !Ref MailTable
+  VoiceBucketName:
+    Value: !Ref VoiceBucket

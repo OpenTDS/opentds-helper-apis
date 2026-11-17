@@ -1,0 +1,103 @@
+# SPDX-License-Identifier: MIT
+# Copyright (c) 2026 Test Data Services Pty. Ltd.
+AWSTemplateFormatVersion: '2010-09-09'
+Description: >-
+  Lets GitHub Actions deploy the Test Helper API into this account with
+  short-lived credentials (OpenID Connect) - no AWS access keys are stored in
+  GitHub. Deploy once with scripts/setup-github-deploy.ps1.
+
+Parameters:
+  GitHubRepository:
+    Type: String
+    AllowedPattern: '^[A-Za-z0-9_.-]+/[A-Za-z0-9_.-]+$'
+    Description: >-
+      owner/repo of YOUR copy, exactly as GitHub spells it (case matters),
+      e.g. OpenTDS/opentds-helper-apis.
+  GitHubEnvironment:
+    Type: String
+    Default: aws-deploy
+    AllowedPattern: '^[A-Za-z0-9_.-]+$'
+    Description: >-
+      GitHub environment the deploy job runs in. Only jobs in this environment
+      can assume the role, so protection rules on it (required reviewers,
+      branch limits) gate every deploy.
+  StackName:
+    Type: String
+    Default: testhelper-v1
+    AllowedPattern: '^[a-z][a-z0-9-]{0,40}$'
+    Description: Stack name deploy.ps1 uses (-StackName). Scopes the IAM permissions.
+  CreateOidcProvider:
+    Type: String
+    Default: 'true'
+    AllowedValues: ['true', 'false']
+    Description: >-
+      false if the account already has the token.actions.githubusercontent.com
+      identity provider (an account can only have one). The setup script
+      detects this.
+
+Conditions:
+  MakeProvider: !Equals [!Ref CreateOidcProvider, 'true']
+
+Resources:
+  GitHubOidcProvider:
+    Type: AWS::IAM::OIDCProvider
+    Condition: MakeProvider
+    Properties:
+      Url: https://token.actions.githubusercontent.com
+      ClientIdList: [sts.amazonaws.com]
+
+  DeployRole:
+    Type: AWS::IAM::Role
+    Properties:
+      Description: !Sub 'GitHub Actions deploys of ${StackName} from ${GitHubRepository}'
+      MaxSessionDuration: 3600
+      AssumeRolePolicyDocument:
+        Version: '2012-10-17'
+        Statement:
+          - Effect: Allow
+            Action: sts:AssumeRoleWithWebIdentity
+            Principal:
+              Federated: !If
+                - MakeProvider
+                - !Ref GitHubOidcProvider
+                - !Sub 'arn:${AWS::Partition}:iam::${AWS::AccountId}:oidc-provider/token.actions.githubusercontent.com'
+            Condition:
+              StringEquals:
+                token.actions.githubusercontent.com:aud: sts.amazonaws.com
+                token.actions.githubusercontent.com:sub: !Sub 'repo:${GitHubRepository}:environment:${GitHubEnvironment}'
+      # PowerUserAccess covers every service the stack uses but no IAM. The
+      # inline policy adds IAM for this stack's own roles only, so the role
+      # cannot create users, keys or roles for anything else.
+      ManagedPolicyArns:
+        - !Sub 'arn:${AWS::Partition}:iam::aws:policy/PowerUserAccess'
+      Policies:
+        - PolicyName: stack-roles-only
+          PolicyDocument:
+            Version: '2012-10-17'
+            Statement:
+              - Sid: ManageThisStacksRoles
+                Effect: Allow
+                Action:
+                  - iam:CreateRole
+                  - iam:DeleteRole
+                  - iam:GetRole
+                  - iam:UpdateRole
+                  - iam:UpdateRoleDescription
+                  - iam:UpdateAssumeRolePolicy
+                  - iam:TagRole
+                  - iam:UntagRole
+                  - iam:ListRoleTags
+                  - iam:PutRolePolicy
+                  - iam:GetRolePolicy
+                  - iam:DeleteRolePolicy
+                  - iam:ListRolePolicies
+                  - iam:AttachRolePolicy
+                  - iam:DetachRolePolicy
+                  - iam:ListAttachedRolePolicies
+                  - iam:PassRole
+                Resource: !Sub 'arn:${AWS::Partition}:iam::${AWS::AccountId}:role/${StackName}-*'
+
+Outputs:
+  RoleArn:
+    Description: Set this as the AWS_ROLE_ARN variable in the GitHub repository.
+    Value: !GetAtt DeployRole.Arn

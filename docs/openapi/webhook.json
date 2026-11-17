@@ -1,0 +1,1541 @@
+{
+ "tag": {
+  "name": "webhook",
+  "description": "Capture inbound webhooks from a system under test and read them back."
+ },
+ "paths": {
+  "/webhook/receive": {
+   "get": {
+    "tags": [
+     "webhook"
+    ],
+    "operationId": "webhookReceive",
+    "summary": "Capture an inbound webhook (any method)",
+    "description": "Point the system under test's webhook URL here. Stores the whole request - method, query parameters (other than key and status), headers, source IP, and body - under the namespace key. JSON bodies are also returned parsed as 'json'; non-UTF-8 bodies are kept as bodyBase64. Bodies over 300 KB are truncated (bodyTruncated:true). No pre-registration: any key works. Answers with HTTP 'status' (default 200) so you can test the sender's retry behaviour. Accepts GET, POST, PUT, PATCH and DELETE. Captured events expire after 30 days.",
+    "parameters": [
+     {
+      "name": "key",
+      "in": "query",
+      "required": true,
+      "schema": {
+       "type": "string"
+      },
+      "description": "Namespace, usually one per test run. 1-128 characters: letters, digits and . _ - : @ + =, starting with a letter, digit or +. Case-sensitive.",
+      "example": "run-7Q2K9ZX4M1"
+     },
+     {
+      "name": "status",
+      "in": "query",
+      "required": false,
+      "schema": {
+       "type": "integer",
+       "default": 200,
+       "minimum": 200,
+       "maximum": 599
+      },
+      "description": "HTTP status to answer with, 200-599. Default 200. 204/304 answer with no body."
+     }
+    ],
+    "responses": {
+     "200": {
+      "description": "OK",
+      "content": {
+       "application/json": {
+        "schema": {
+         "type": "object",
+         "required": [
+          "received",
+          "key",
+          "seq",
+          "receivedTime",
+          "status"
+         ],
+         "properties": {
+          "received": {
+           "type": "boolean"
+          },
+          "key": {
+           "type": "string"
+          },
+          "seq": {
+           "type": "string"
+          },
+          "receivedTime": {
+           "type": "integer"
+          },
+          "status": {
+           "type": "integer"
+          }
+         }
+        },
+        "example": {
+         "received": true,
+         "key": "run-7Q2K9ZX4M1",
+         "seq": "001759112345678-0042817",
+         "receivedTime": 1759112345,
+         "status": 200
+        }
+       }
+      }
+     },
+     "2XX": {
+      "description": "The receipt, answered with the HTTP status you chose with status= (204 and 304 have no body).",
+      "content": {
+       "application/json": {
+        "schema": {
+         "type": "object",
+         "required": [
+          "received",
+          "key",
+          "seq",
+          "receivedTime",
+          "status"
+         ],
+         "properties": {
+          "received": {
+           "type": "boolean"
+          },
+          "key": {
+           "type": "string"
+          },
+          "seq": {
+           "type": "string"
+          },
+          "receivedTime": {
+           "type": "integer"
+          },
+          "status": {
+           "type": "integer"
+          }
+         }
+        }
+       }
+      }
+     },
+     "3XX": {
+      "description": "The receipt, answered with the HTTP status you chose with status= (204 and 304 have no body).",
+      "content": {
+       "application/json": {
+        "schema": {
+         "type": "object",
+         "required": [
+          "received",
+          "key",
+          "seq",
+          "receivedTime",
+          "status"
+         ],
+         "properties": {
+          "received": {
+           "type": "boolean"
+          },
+          "key": {
+           "type": "string"
+          },
+          "seq": {
+           "type": "string"
+          },
+          "receivedTime": {
+           "type": "integer"
+          },
+          "status": {
+           "type": "integer"
+          }
+         }
+        }
+       }
+      }
+     },
+     "400": {
+      "description": "Either a request error (Error body), or status=400 was asked for (receipt body).",
+      "content": {
+       "application/json": {
+        "schema": {
+         "anyOf": [
+          {
+           "$ref": "#/components/schemas/Error"
+          },
+          {
+           "type": "object",
+           "required": [
+            "received",
+            "key",
+            "seq",
+            "receivedTime",
+            "status"
+           ],
+           "properties": {
+            "received": {
+             "type": "boolean"
+            },
+            "key": {
+             "type": "string"
+            },
+            "seq": {
+             "type": "string"
+            },
+            "receivedTime": {
+             "type": "integer"
+            },
+            "status": {
+             "type": "integer"
+            }
+           }
+          }
+         ]
+        }
+       }
+      }
+     },
+     "4XX": {
+      "description": "The receipt, answered with the HTTP status you chose with status= (204 and 304 have no body).",
+      "content": {
+       "application/json": {
+        "schema": {
+         "type": "object",
+         "required": [
+          "received",
+          "key",
+          "seq",
+          "receivedTime",
+          "status"
+         ],
+         "properties": {
+          "received": {
+           "type": "boolean"
+          },
+          "key": {
+           "type": "string"
+          },
+          "seq": {
+           "type": "string"
+          },
+          "receivedTime": {
+           "type": "integer"
+          },
+          "status": {
+           "type": "integer"
+          }
+         }
+        }
+       }
+      }
+     },
+     "5XX": {
+      "description": "The receipt, answered with the HTTP status you chose with status= (204 and 304 have no body).",
+      "content": {
+       "application/json": {
+        "schema": {
+         "type": "object",
+         "required": [
+          "received",
+          "key",
+          "seq",
+          "receivedTime",
+          "status"
+         ],
+         "properties": {
+          "received": {
+           "type": "boolean"
+          },
+          "key": {
+           "type": "string"
+          },
+          "seq": {
+           "type": "string"
+          },
+          "receivedTime": {
+           "type": "integer"
+          },
+          "status": {
+           "type": "integer"
+          }
+         }
+        }
+       }
+      }
+     }
+    }
+   },
+   "post": {
+    "tags": [
+     "webhook"
+    ],
+    "operationId": "webhookReceivePost",
+    "summary": "Capture an inbound webhook (POST)",
+    "description": "Point the system under test's webhook URL here. Stores the whole request - method, query parameters (other than key and status), headers, source IP, and body - under the namespace key. JSON bodies are also returned parsed as 'json'; non-UTF-8 bodies are kept as bodyBase64. Bodies over 300 KB are truncated (bodyTruncated:true). No pre-registration: any key works. Answers with HTTP 'status' (default 200) so you can test the sender's retry behaviour. Accepts GET, POST, PUT, PATCH and DELETE. Captured events expire after 30 days.",
+    "parameters": [
+     {
+      "name": "key",
+      "in": "query",
+      "required": true,
+      "schema": {
+       "type": "string"
+      },
+      "description": "Namespace, usually one per test run. 1-128 characters: letters, digits and . _ - : @ + =, starting with a letter, digit or +. Case-sensitive.",
+      "example": "run-7Q2K9ZX4M1"
+     },
+     {
+      "name": "status",
+      "in": "query",
+      "required": false,
+      "schema": {
+       "type": "integer",
+       "default": 200,
+       "minimum": 200,
+       "maximum": 599
+      },
+      "description": "HTTP status to answer with, 200-599. Default 200. 204/304 answer with no body."
+     }
+    ],
+    "responses": {
+     "200": {
+      "description": "OK",
+      "content": {
+       "application/json": {
+        "schema": {
+         "type": "object",
+         "required": [
+          "received",
+          "key",
+          "seq",
+          "receivedTime",
+          "status"
+         ],
+         "properties": {
+          "received": {
+           "type": "boolean"
+          },
+          "key": {
+           "type": "string"
+          },
+          "seq": {
+           "type": "string"
+          },
+          "receivedTime": {
+           "type": "integer"
+          },
+          "status": {
+           "type": "integer"
+          }
+         }
+        },
+        "example": {
+         "received": true,
+         "key": "run-7Q2K9ZX4M1",
+         "seq": "001759112345678-0042817",
+         "receivedTime": 1759112345,
+         "status": 200
+        }
+       }
+      }
+     },
+     "2XX": {
+      "description": "The receipt, answered with the HTTP status you chose with status= (204 and 304 have no body).",
+      "content": {
+       "application/json": {
+        "schema": {
+         "type": "object",
+         "required": [
+          "received",
+          "key",
+          "seq",
+          "receivedTime",
+          "status"
+         ],
+         "properties": {
+          "received": {
+           "type": "boolean"
+          },
+          "key": {
+           "type": "string"
+          },
+          "seq": {
+           "type": "string"
+          },
+          "receivedTime": {
+           "type": "integer"
+          },
+          "status": {
+           "type": "integer"
+          }
+         }
+        }
+       }
+      }
+     },
+     "3XX": {
+      "description": "The receipt, answered with the HTTP status you chose with status= (204 and 304 have no body).",
+      "content": {
+       "application/json": {
+        "schema": {
+         "type": "object",
+         "required": [
+          "received",
+          "key",
+          "seq",
+          "receivedTime",
+          "status"
+         ],
+         "properties": {
+          "received": {
+           "type": "boolean"
+          },
+          "key": {
+           "type": "string"
+          },
+          "seq": {
+           "type": "string"
+          },
+          "receivedTime": {
+           "type": "integer"
+          },
+          "status": {
+           "type": "integer"
+          }
+         }
+        }
+       }
+      }
+     },
+     "400": {
+      "description": "Either a request error (Error body), or status=400 was asked for (receipt body).",
+      "content": {
+       "application/json": {
+        "schema": {
+         "anyOf": [
+          {
+           "$ref": "#/components/schemas/Error"
+          },
+          {
+           "type": "object",
+           "required": [
+            "received",
+            "key",
+            "seq",
+            "receivedTime",
+            "status"
+           ],
+           "properties": {
+            "received": {
+             "type": "boolean"
+            },
+            "key": {
+             "type": "string"
+            },
+            "seq": {
+             "type": "string"
+            },
+            "receivedTime": {
+             "type": "integer"
+            },
+            "status": {
+             "type": "integer"
+            }
+           }
+          }
+         ]
+        }
+       }
+      }
+     },
+     "4XX": {
+      "description": "The receipt, answered with the HTTP status you chose with status= (204 and 304 have no body).",
+      "content": {
+       "application/json": {
+        "schema": {
+         "type": "object",
+         "required": [
+          "received",
+          "key",
+          "seq",
+          "receivedTime",
+          "status"
+         ],
+         "properties": {
+          "received": {
+           "type": "boolean"
+          },
+          "key": {
+           "type": "string"
+          },
+          "seq": {
+           "type": "string"
+          },
+          "receivedTime": {
+           "type": "integer"
+          },
+          "status": {
+           "type": "integer"
+          }
+         }
+        }
+       }
+      }
+     },
+     "5XX": {
+      "description": "The receipt, answered with the HTTP status you chose with status= (204 and 304 have no body).",
+      "content": {
+       "application/json": {
+        "schema": {
+         "type": "object",
+         "required": [
+          "received",
+          "key",
+          "seq",
+          "receivedTime",
+          "status"
+         ],
+         "properties": {
+          "received": {
+           "type": "boolean"
+          },
+          "key": {
+           "type": "string"
+          },
+          "seq": {
+           "type": "string"
+          },
+          "receivedTime": {
+           "type": "integer"
+          },
+          "status": {
+           "type": "integer"
+          }
+         }
+        }
+       }
+      }
+     }
+    },
+    "requestBody": {
+     "required": false,
+     "content": {
+      "*/*": {
+       "schema": {
+        "type": "string"
+       }
+      }
+     },
+     "description": "Any body. Stored as sent."
+    }
+   },
+   "put": {
+    "tags": [
+     "webhook"
+    ],
+    "operationId": "webhookReceivePut",
+    "summary": "Capture an inbound webhook (PUT)",
+    "description": "Point the system under test's webhook URL here. Stores the whole request - method, query parameters (other than key and status), headers, source IP, and body - under the namespace key. JSON bodies are also returned parsed as 'json'; non-UTF-8 bodies are kept as bodyBase64. Bodies over 300 KB are truncated (bodyTruncated:true). No pre-registration: any key works. Answers with HTTP 'status' (default 200) so you can test the sender's retry behaviour. Accepts GET, POST, PUT, PATCH and DELETE. Captured events expire after 30 days.",
+    "parameters": [
+     {
+      "name": "key",
+      "in": "query",
+      "required": true,
+      "schema": {
+       "type": "string"
+      },
+      "description": "Namespace, usually one per test run. 1-128 characters: letters, digits and . _ - : @ + =, starting with a letter, digit or +. Case-sensitive.",
+      "example": "run-7Q2K9ZX4M1"
+     },
+     {
+      "name": "status",
+      "in": "query",
+      "required": false,
+      "schema": {
+       "type": "integer",
+       "default": 200,
+       "minimum": 200,
+       "maximum": 599
+      },
+      "description": "HTTP status to answer with, 200-599. Default 200. 204/304 answer with no body."
+     }
+    ],
+    "responses": {
+     "200": {
+      "description": "OK",
+      "content": {
+       "application/json": {
+        "schema": {
+         "type": "object",
+         "required": [
+          "received",
+          "key",
+          "seq",
+          "receivedTime",
+          "status"
+         ],
+         "properties": {
+          "received": {
+           "type": "boolean"
+          },
+          "key": {
+           "type": "string"
+          },
+          "seq": {
+           "type": "string"
+          },
+          "receivedTime": {
+           "type": "integer"
+          },
+          "status": {
+           "type": "integer"
+          }
+         }
+        },
+        "example": {
+         "received": true,
+         "key": "run-7Q2K9ZX4M1",
+         "seq": "001759112345678-0042817",
+         "receivedTime": 1759112345,
+         "status": 200
+        }
+       }
+      }
+     },
+     "2XX": {
+      "description": "The receipt, answered with the HTTP status you chose with status= (204 and 304 have no body).",
+      "content": {
+       "application/json": {
+        "schema": {
+         "type": "object",
+         "required": [
+          "received",
+          "key",
+          "seq",
+          "receivedTime",
+          "status"
+         ],
+         "properties": {
+          "received": {
+           "type": "boolean"
+          },
+          "key": {
+           "type": "string"
+          },
+          "seq": {
+           "type": "string"
+          },
+          "receivedTime": {
+           "type": "integer"
+          },
+          "status": {
+           "type": "integer"
+          }
+         }
+        }
+       }
+      }
+     },
+     "3XX": {
+      "description": "The receipt, answered with the HTTP status you chose with status= (204 and 304 have no body).",
+      "content": {
+       "application/json": {
+        "schema": {
+         "type": "object",
+         "required": [
+          "received",
+          "key",
+          "seq",
+          "receivedTime",
+          "status"
+         ],
+         "properties": {
+          "received": {
+           "type": "boolean"
+          },
+          "key": {
+           "type": "string"
+          },
+          "seq": {
+           "type": "string"
+          },
+          "receivedTime": {
+           "type": "integer"
+          },
+          "status": {
+           "type": "integer"
+          }
+         }
+        }
+       }
+      }
+     },
+     "400": {
+      "description": "Either a request error (Error body), or status=400 was asked for (receipt body).",
+      "content": {
+       "application/json": {
+        "schema": {
+         "anyOf": [
+          {
+           "$ref": "#/components/schemas/Error"
+          },
+          {
+           "type": "object",
+           "required": [
+            "received",
+            "key",
+            "seq",
+            "receivedTime",
+            "status"
+           ],
+           "properties": {
+            "received": {
+             "type": "boolean"
+            },
+            "key": {
+             "type": "string"
+            },
+            "seq": {
+             "type": "string"
+            },
+            "receivedTime": {
+             "type": "integer"
+            },
+            "status": {
+             "type": "integer"
+            }
+           }
+          }
+         ]
+        }
+       }
+      }
+     },
+     "4XX": {
+      "description": "The receipt, answered with the HTTP status you chose with status= (204 and 304 have no body).",
+      "content": {
+       "application/json": {
+        "schema": {
+         "type": "object",
+         "required": [
+          "received",
+          "key",
+          "seq",
+          "receivedTime",
+          "status"
+         ],
+         "properties": {
+          "received": {
+           "type": "boolean"
+          },
+          "key": {
+           "type": "string"
+          },
+          "seq": {
+           "type": "string"
+          },
+          "receivedTime": {
+           "type": "integer"
+          },
+          "status": {
+           "type": "integer"
+          }
+         }
+        }
+       }
+      }
+     },
+     "5XX": {
+      "description": "The receipt, answered with the HTTP status you chose with status= (204 and 304 have no body).",
+      "content": {
+       "application/json": {
+        "schema": {
+         "type": "object",
+         "required": [
+          "received",
+          "key",
+          "seq",
+          "receivedTime",
+          "status"
+         ],
+         "properties": {
+          "received": {
+           "type": "boolean"
+          },
+          "key": {
+           "type": "string"
+          },
+          "seq": {
+           "type": "string"
+          },
+          "receivedTime": {
+           "type": "integer"
+          },
+          "status": {
+           "type": "integer"
+          }
+         }
+        }
+       }
+      }
+     }
+    },
+    "requestBody": {
+     "required": false,
+     "content": {
+      "*/*": {
+       "schema": {
+        "type": "string"
+       }
+      }
+     },
+     "description": "Any body. Stored as sent."
+    }
+   },
+   "patch": {
+    "tags": [
+     "webhook"
+    ],
+    "operationId": "webhookReceivePatch",
+    "summary": "Capture an inbound webhook (PATCH)",
+    "description": "Point the system under test's webhook URL here. Stores the whole request - method, query parameters (other than key and status), headers, source IP, and body - under the namespace key. JSON bodies are also returned parsed as 'json'; non-UTF-8 bodies are kept as bodyBase64. Bodies over 300 KB are truncated (bodyTruncated:true). No pre-registration: any key works. Answers with HTTP 'status' (default 200) so you can test the sender's retry behaviour. Accepts GET, POST, PUT, PATCH and DELETE. Captured events expire after 30 days.",
+    "parameters": [
+     {
+      "name": "key",
+      "in": "query",
+      "required": true,
+      "schema": {
+       "type": "string"
+      },
+      "description": "Namespace, usually one per test run. 1-128 characters: letters, digits and . _ - : @ + =, starting with a letter, digit or +. Case-sensitive.",
+      "example": "run-7Q2K9ZX4M1"
+     },
+     {
+      "name": "status",
+      "in": "query",
+      "required": false,
+      "schema": {
+       "type": "integer",
+       "default": 200,
+       "minimum": 200,
+       "maximum": 599
+      },
+      "description": "HTTP status to answer with, 200-599. Default 200. 204/304 answer with no body."
+     }
+    ],
+    "responses": {
+     "200": {
+      "description": "OK",
+      "content": {
+       "application/json": {
+        "schema": {
+         "type": "object",
+         "required": [
+          "received",
+          "key",
+          "seq",
+          "receivedTime",
+          "status"
+         ],
+         "properties": {
+          "received": {
+           "type": "boolean"
+          },
+          "key": {
+           "type": "string"
+          },
+          "seq": {
+           "type": "string"
+          },
+          "receivedTime": {
+           "type": "integer"
+          },
+          "status": {
+           "type": "integer"
+          }
+         }
+        },
+        "example": {
+         "received": true,
+         "key": "run-7Q2K9ZX4M1",
+         "seq": "001759112345678-0042817",
+         "receivedTime": 1759112345,
+         "status": 200
+        }
+       }
+      }
+     },
+     "2XX": {
+      "description": "The receipt, answered with the HTTP status you chose with status= (204 and 304 have no body).",
+      "content": {
+       "application/json": {
+        "schema": {
+         "type": "object",
+         "required": [
+          "received",
+          "key",
+          "seq",
+          "receivedTime",
+          "status"
+         ],
+         "properties": {
+          "received": {
+           "type": "boolean"
+          },
+          "key": {
+           "type": "string"
+          },
+          "seq": {
+           "type": "string"
+          },
+          "receivedTime": {
+           "type": "integer"
+          },
+          "status": {
+           "type": "integer"
+          }
+         }
+        }
+       }
+      }
+     },
+     "3XX": {
+      "description": "The receipt, answered with the HTTP status you chose with status= (204 and 304 have no body).",
+      "content": {
+       "application/json": {
+        "schema": {
+         "type": "object",
+         "required": [
+          "received",
+          "key",
+          "seq",
+          "receivedTime",
+          "status"
+         ],
+         "properties": {
+          "received": {
+           "type": "boolean"
+          },
+          "key": {
+           "type": "string"
+          },
+          "seq": {
+           "type": "string"
+          },
+          "receivedTime": {
+           "type": "integer"
+          },
+          "status": {
+           "type": "integer"
+          }
+         }
+        }
+       }
+      }
+     },
+     "400": {
+      "description": "Either a request error (Error body), or status=400 was asked for (receipt body).",
+      "content": {
+       "application/json": {
+        "schema": {
+         "anyOf": [
+          {
+           "$ref": "#/components/schemas/Error"
+          },
+          {
+           "type": "object",
+           "required": [
+            "received",
+            "key",
+            "seq",
+            "receivedTime",
+            "status"
+           ],
+           "properties": {
+            "received": {
+             "type": "boolean"
+            },
+            "key": {
+             "type": "string"
+            },
+            "seq": {
+             "type": "string"
+            },
+            "receivedTime": {
+             "type": "integer"
+            },
+            "status": {
+             "type": "integer"
+            }
+           }
+          }
+         ]
+        }
+       }
+      }
+     },
+     "4XX": {
+      "description": "The receipt, answered with the HTTP status you chose with status= (204 and 304 have no body).",
+      "content": {
+       "application/json": {
+        "schema": {
+         "type": "object",
+         "required": [
+          "received",
+          "key",
+          "seq",
+          "receivedTime",
+          "status"
+         ],
+         "properties": {
+          "received": {
+           "type": "boolean"
+          },
+          "key": {
+           "type": "string"
+          },
+          "seq": {
+           "type": "string"
+          },
+          "receivedTime": {
+           "type": "integer"
+          },
+          "status": {
+           "type": "integer"
+          }
+         }
+        }
+       }
+      }
+     },
+     "5XX": {
+      "description": "The receipt, answered with the HTTP status you chose with status= (204 and 304 have no body).",
+      "content": {
+       "application/json": {
+        "schema": {
+         "type": "object",
+         "required": [
+          "received",
+          "key",
+          "seq",
+          "receivedTime",
+          "status"
+         ],
+         "properties": {
+          "received": {
+           "type": "boolean"
+          },
+          "key": {
+           "type": "string"
+          },
+          "seq": {
+           "type": "string"
+          },
+          "receivedTime": {
+           "type": "integer"
+          },
+          "status": {
+           "type": "integer"
+          }
+         }
+        }
+       }
+      }
+     }
+    },
+    "requestBody": {
+     "required": false,
+     "content": {
+      "*/*": {
+       "schema": {
+        "type": "string"
+       }
+      }
+     },
+     "description": "Any body. Stored as sent."
+    }
+   },
+   "delete": {
+    "tags": [
+     "webhook"
+    ],
+    "operationId": "webhookReceiveDelete",
+    "summary": "Capture an inbound webhook (DELETE)",
+    "description": "Point the system under test's webhook URL here. Stores the whole request - method, query parameters (other than key and status), headers, source IP, and body - under the namespace key. JSON bodies are also returned parsed as 'json'; non-UTF-8 bodies are kept as bodyBase64. Bodies over 300 KB are truncated (bodyTruncated:true). No pre-registration: any key works. Answers with HTTP 'status' (default 200) so you can test the sender's retry behaviour. Accepts GET, POST, PUT, PATCH and DELETE. Captured events expire after 30 days.",
+    "parameters": [
+     {
+      "name": "key",
+      "in": "query",
+      "required": true,
+      "schema": {
+       "type": "string"
+      },
+      "description": "Namespace, usually one per test run. 1-128 characters: letters, digits and . _ - : @ + =, starting with a letter, digit or +. Case-sensitive.",
+      "example": "run-7Q2K9ZX4M1"
+     },
+     {
+      "name": "status",
+      "in": "query",
+      "required": false,
+      "schema": {
+       "type": "integer",
+       "default": 200,
+       "minimum": 200,
+       "maximum": 599
+      },
+      "description": "HTTP status to answer with, 200-599. Default 200. 204/304 answer with no body."
+     }
+    ],
+    "responses": {
+     "200": {
+      "description": "OK",
+      "content": {
+       "application/json": {
+        "schema": {
+         "type": "object",
+         "required": [
+          "received",
+          "key",
+          "seq",
+          "receivedTime",
+          "status"
+         ],
+         "properties": {
+          "received": {
+           "type": "boolean"
+          },
+          "key": {
+           "type": "string"
+          },
+          "seq": {
+           "type": "string"
+          },
+          "receivedTime": {
+           "type": "integer"
+          },
+          "status": {
+           "type": "integer"
+          }
+         }
+        },
+        "example": {
+         "received": true,
+         "key": "run-7Q2K9ZX4M1",
+         "seq": "001759112345678-0042817",
+         "receivedTime": 1759112345,
+         "status": 200
+        }
+       }
+      }
+     },
+     "2XX": {
+      "description": "The receipt, answered with the HTTP status you chose with status= (204 and 304 have no body).",
+      "content": {
+       "application/json": {
+        "schema": {
+         "type": "object",
+         "required": [
+          "received",
+          "key",
+          "seq",
+          "receivedTime",
+          "status"
+         ],
+         "properties": {
+          "received": {
+           "type": "boolean"
+          },
+          "key": {
+           "type": "string"
+          },
+          "seq": {
+           "type": "string"
+          },
+          "receivedTime": {
+           "type": "integer"
+          },
+          "status": {
+           "type": "integer"
+          }
+         }
+        }
+       }
+      }
+     },
+     "3XX": {
+      "description": "The receipt, answered with the HTTP status you chose with status= (204 and 304 have no body).",
+      "content": {
+       "application/json": {
+        "schema": {
+         "type": "object",
+         "required": [
+          "received",
+          "key",
+          "seq",
+          "receivedTime",
+          "status"
+         ],
+         "properties": {
+          "received": {
+           "type": "boolean"
+          },
+          "key": {
+           "type": "string"
+          },
+          "seq": {
+           "type": "string"
+          },
+          "receivedTime": {
+           "type": "integer"
+          },
+          "status": {
+           "type": "integer"
+          }
+         }
+        }
+       }
+      }
+     },
+     "400": {
+      "description": "Either a request error (Error body), or status=400 was asked for (receipt body).",
+      "content": {
+       "application/json": {
+        "schema": {
+         "anyOf": [
+          {
+           "$ref": "#/components/schemas/Error"
+          },
+          {
+           "type": "object",
+           "required": [
+            "received",
+            "key",
+            "seq",
+            "receivedTime",
+            "status"
+           ],
+           "properties": {
+            "received": {
+             "type": "boolean"
+            },
+            "key": {
+             "type": "string"
+            },
+            "seq": {
+             "type": "string"
+            },
+            "receivedTime": {
+             "type": "integer"
+            },
+            "status": {
+             "type": "integer"
+            }
+           }
+          }
+         ]
+        }
+       }
+      }
+     },
+     "4XX": {
+      "description": "The receipt, answered with the HTTP status you chose with status= (204 and 304 have no body).",
+      "content": {
+       "application/json": {
+        "schema": {
+         "type": "object",
+         "required": [
+          "received",
+          "key",
+          "seq",
+          "receivedTime",
+          "status"
+         ],
+         "properties": {
+          "received": {
+           "type": "boolean"
+          },
+          "key": {
+           "type": "string"
+          },
+          "seq": {
+           "type": "string"
+          },
+          "receivedTime": {
+           "type": "integer"
+          },
+          "status": {
+           "type": "integer"
+          }
+         }
+        }
+       }
+      }
+     },
+     "5XX": {
+      "description": "The receipt, answered with the HTTP status you chose with status= (204 and 304 have no body).",
+      "content": {
+       "application/json": {
+        "schema": {
+         "type": "object",
+         "required": [
+          "received",
+          "key",
+          "seq",
+          "receivedTime",
+          "status"
+         ],
+         "properties": {
+          "received": {
+           "type": "boolean"
+          },
+          "key": {
+           "type": "string"
+          },
+          "seq": {
+           "type": "string"
+          },
+          "receivedTime": {
+           "type": "integer"
+          },
+          "status": {
+           "type": "integer"
+          }
+         }
+        }
+       }
+      }
+     }
+    }
+   }
+  },
+  "/webhook/list": {
+   "get": {
+    "tags": [
+     "webhook"
+    ],
+    "operationId": "webhookList",
+    "summary": "List captured webhooks for a key (newest first)",
+    "description": "Returns events newest first with count and more (true when limit cut the list). since narrows to events received at or after that time; wait holds the request open until at least one matching event exists - the way to wait for a webhook without a polling loop. Capture the time just before triggering the action, pass it as since, and use wait=20.",
+    "parameters": [
+     {
+      "name": "key",
+      "in": "query",
+      "required": true,
+      "schema": {
+       "type": "string"
+      },
+      "description": "Namespace, usually one per test run. 1-128 characters: letters, digits and . _ - : @ + =, starting with a letter, digit or +. Case-sensitive.",
+      "example": "run-7Q2K9ZX4M1"
+     },
+     {
+      "name": "since",
+      "in": "query",
+      "required": false,
+      "schema": {
+       "type": "number"
+      },
+      "description": "Only events received at or after this UTC epoch time (seconds or milliseconds).",
+      "example": 1759112340
+     },
+     {
+      "name": "wait",
+      "in": "query",
+      "required": false,
+      "schema": {
+       "type": "integer",
+       "default": 0,
+       "minimum": 0,
+       "maximum": 20
+      },
+      "description": "Seconds (0-20) to hold the request open until at least one matching event exists. Default 0."
+     },
+     {
+      "name": "limit",
+      "in": "query",
+      "required": false,
+      "schema": {
+       "type": "integer",
+       "default": 50,
+       "minimum": 1,
+       "maximum": 500
+      },
+      "description": "Maximum events to return, 1-500. Default 50."
+     }
+    ],
+    "responses": {
+     "200": {
+      "description": "OK",
+      "content": {
+       "application/json": {
+        "schema": {
+         "type": "object",
+         "required": [
+          "key",
+          "count",
+          "more",
+          "waitedMs",
+          "events"
+         ],
+         "properties": {
+          "key": {
+           "type": "string"
+          },
+          "count": {
+           "type": "integer"
+          },
+          "more": {
+           "type": "boolean"
+          },
+          "waitedMs": {
+           "type": "integer"
+          },
+          "events": {
+           "type": "array",
+           "items": {
+            "type": "object",
+            "required": [
+             "key",
+             "seq",
+             "receivedTime",
+             "receivedTimeMs",
+             "method",
+             "query",
+             "headers",
+             "sourceIp",
+             "contentType",
+             "bytes"
+            ],
+            "properties": {
+             "key": {
+              "type": "string"
+             },
+             "seq": {
+              "type": "string"
+             },
+             "receivedTime": {
+              "type": "integer"
+             },
+             "receivedTimeMs": {
+              "type": "integer"
+             },
+             "method": {
+              "type": "string"
+             },
+             "query": {
+              "type": "object",
+              "additionalProperties": {
+               "type": "string"
+              }
+             },
+             "headers": {
+              "type": "object",
+              "additionalProperties": {
+               "type": "string"
+              }
+             },
+             "sourceIp": {
+              "type": "string"
+             },
+             "contentType": {
+              "type": "string"
+             },
+             "bytes": {
+              "type": "integer"
+             },
+             "body": {
+              "type": "string"
+             },
+             "json": {},
+             "bodyBase64": {
+              "type": "string"
+             }
+            }
+           }
+          }
+         }
+        },
+        "example": {
+         "key": "run-7Q2K9ZX4M1",
+         "count": 1,
+         "more": false,
+         "waitedMs": 812,
+         "events": [
+          {
+           "key": "run-7Q2K9ZX4M1",
+           "seq": "001759112345678-0042817",
+           "receivedTime": 1759112345,
+           "receivedTimeMs": 1759112345678,
+           "method": "POST",
+           "query": {
+            "orderid": "42"
+           },
+           "headers": {
+            "content-type": "application/json",
+            "user-agent": "ExampleApp/1.0"
+           },
+           "sourceIp": "203.0.113.10",
+           "contentType": "application/json",
+           "bytes": 31,
+           "body": "{\"event\":\"paid\",\"amount\":10.50}",
+           "json": {
+            "event": "paid",
+            "amount": 10.5
+           }
+          }
+         ]
+        }
+       }
+      }
+     },
+     "400": {
+      "$ref": "#/components/responses/Error"
+     }
+    }
+   }
+  },
+  "/webhook/clear": {
+   "get": {
+    "tags": [
+     "webhook"
+    ],
+    "operationId": "webhookClear",
+    "summary": "Delete all captured webhooks for a key",
+    "description": "Idempotent.",
+    "parameters": [
+     {
+      "name": "key",
+      "in": "query",
+      "required": true,
+      "schema": {
+       "type": "string"
+      },
+      "description": "Namespace, usually one per test run. 1-128 characters: letters, digits and . _ - : @ + =, starting with a letter, digit or +. Case-sensitive.",
+      "example": "run-7Q2K9ZX4M1"
+     }
+    ],
+    "responses": {
+     "200": {
+      "description": "OK",
+      "content": {
+       "application/json": {
+        "schema": {
+         "type": "object",
+         "required": [
+          "key",
+          "deleted"
+         ],
+         "properties": {
+          "key": {
+           "type": "string"
+          },
+          "deleted": {
+           "type": "integer"
+          }
+         }
+        },
+        "example": {
+         "key": "run-7Q2K9ZX4M1",
+         "deleted": 3
+        }
+       }
+      }
+     },
+     "400": {
+      "$ref": "#/components/responses/Error"
+     }
+    }
+   }
+  }
+ }
+}

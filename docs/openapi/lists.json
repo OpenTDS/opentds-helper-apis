@@ -1,0 +1,3180 @@
+{
+ "tag": {
+  "name": "lists",
+  "description": "Keyed test-data queues shared by every virtual user: push/pop/random records, bulk CSV/JSON import (atomic replace), run-scoped variables, atomic counters, and a cleanup register for records a test created."
+ },
+ "paths": {
+  "/lists/push": {
+   "get": {
+    "tags": [
+     "lists"
+    ],
+    "operationId": "listsPush",
+    "summary": "Append a record to a key's queue",
+    "description": "Appends one record. Every query parameter other than `key` becomes a field of the record, stored as a string with its name exactly as sent (case kept). The fields `key`, `index` and `createdTime` are added to every record, so a parameter named `index` or `createdTime` is rejected (400). The key's queue is created on first use. Pushing onto a key filled by `lists/import` appends after the imported records.",
+    "parameters": [
+     {
+      "name": "key",
+      "in": "query",
+      "required": true,
+      "description": "Caller-chosen namespace (a test run, team or data set). 1-128 characters: letters, digits and . _ - : @ + =, starting with a letter, digit or +. Case-sensitive.",
+      "schema": {
+       "type": "string"
+      },
+      "example": "run42-customers"
+     },
+     {
+      "name": "email",
+      "in": "query",
+      "required": false,
+      "description": "Example record field. Any parameter except `key` is stored as a field.",
+      "schema": {
+       "type": "string"
+      },
+      "example": "alice@example.com"
+     },
+     {
+      "name": "plan",
+      "in": "query",
+      "required": false,
+      "description": "Another example field.",
+      "schema": {
+       "type": "string"
+      },
+      "example": "gold"
+     }
+    ],
+    "responses": {
+     "200": {
+      "description": "OK",
+      "content": {
+       "application/json": {
+        "schema": {
+         "type": "object",
+         "required": [
+          "key",
+          "index",
+          "createdTime",
+          "count",
+          "record"
+         ],
+         "properties": {
+          "key": {
+           "type": "string"
+          },
+          "index": {
+           "type": "integer"
+          },
+          "createdTime": {
+           "type": "integer"
+          },
+          "count": {
+           "type": "integer"
+          },
+          "record": {
+           "$ref": "#/components/schemas/ListRecord"
+          }
+         }
+        },
+        "example": {
+         "key": "run42-customers",
+         "index": 4,
+         "createdTime": 1790000000,
+         "count": 4,
+         "record": {
+          "email": "alice@example.com",
+          "plan": "gold",
+          "key": "run42-customers",
+          "index": 4,
+          "createdTime": 1790000000
+         }
+        }
+       }
+      }
+     },
+     "400": {
+      "$ref": "#/components/responses/Error"
+     }
+    },
+    "x-free-form-query": {
+     "description": "Every query parameter except key becomes a field of the record, with its value as a string (names keep the case you send). key, index and createdTime are reserved.",
+     "additionalProperties": {
+      "type": "string"
+     }
+    }
+   }
+  },
+  "/lists/pop": {
+   "get": {
+    "tags": [
+     "lists"
+    ],
+    "operationId": "listsPop",
+    "summary": "Take the next record (each record is handed out once)",
+    "description": "Returns the record at the pop pointer and advances it in one atomic conditional write, so concurrent virtual users never receive the same record. When every record has been handed out the response is still HTTP 200, with `exhausted: true` and `record: null` - call `lists/reset` to start again. `remaining` is how many records are left after this one. For data that may be reused once every record has had its turn, use `lists/cyclepop`, which starts again at record 1 instead of running out.",
+    "parameters": [
+     {
+      "name": "key",
+      "in": "query",
+      "required": true,
+      "description": "Caller-chosen namespace (a test run, team or data set). 1-128 characters: letters, digits and . _ - : @ + =, starting with a letter, digit or +. Case-sensitive.",
+      "schema": {
+       "type": "string"
+      },
+      "example": "run42-customers"
+     }
+    ],
+    "responses": {
+     "200": {
+      "description": "OK",
+      "content": {
+       "application/json": {
+        "schema": {
+         "type": "object",
+         "required": [
+          "key",
+          "exhausted",
+          "index",
+          "record"
+         ],
+         "properties": {
+          "key": {
+           "type": "string"
+          },
+          "exhausted": {
+           "type": "boolean"
+          },
+          "index": {
+           "type": "integer",
+           "nullable": true
+          },
+          "count": {
+           "type": "integer"
+          },
+          "remaining": {
+           "type": "integer"
+          },
+          "record": {
+           "type": "object",
+           "nullable": true,
+           "description": "The record, or null when there is none.",
+           "required": [
+            "key",
+            "index",
+            "createdTime"
+           ],
+           "properties": {
+            "key": {
+             "type": "string"
+            },
+            "index": {
+             "type": "integer"
+            },
+            "createdTime": {
+             "type": "integer"
+            }
+           },
+           "additionalProperties": true
+          },
+          "message": {
+           "type": "string"
+          }
+         }
+        },
+        "example": {
+         "key": "run42-customers",
+         "exhausted": false,
+         "index": 1,
+         "count": 3,
+         "remaining": 2,
+         "record": {
+          "email": "alice@example.com",
+          "customer_id": "51824753556",
+          "key": "run42-customers",
+          "index": 1,
+          "createdTime": 1790000000
+         }
+        }
+       }
+      }
+     },
+     "400": {
+      "$ref": "#/components/responses/Error"
+     }
+    }
+   }
+  },
+  "/lists/cyclepop": {
+   "get": {
+    "tags": [
+     "lists"
+    ],
+    "operationId": "listsCyclePop",
+    "summary": "Take the next record, starting again at record 1 after the last (pop that never runs out)",
+    "description": "Like `lists/pop`, but instead of running out it goes round again: after the last record it hands out record 1, then 2, and so on. One atomic write per call, so concurrent virtual users always get different records, and a record comes round again only after every other record has been handed out. It shares pop's pointer (`nextPop` in `lists/list`): `lists/reset` and `lists/import` start it at record 1 again, and after cyclepop has wrapped, a plain `pop` on the same key reports `exhausted` until a reset. `pass` counts the times round the list (1 on the first), `wrapped` is true on the first record of every pass after the first, and `remaining` is how many records are left in this pass. `exhausted` is true only when the key has no records at all (then `empty: true`, `record: null`, HTTP 200). Use it when a record may be reused but must not be in use by two scripts at once - keep the list larger than the number of scripts that can hold a record at the same time. Use `pop` when a record must never be used twice.",
+    "parameters": [
+     {
+      "name": "key",
+      "in": "query",
+      "required": true,
+      "description": "Caller-chosen namespace (a test run, team or data set). 1-128 characters: letters, digits and . _ - : @ + =, starting with a letter, digit or +. Case-sensitive.",
+      "schema": {
+       "type": "string"
+      },
+      "example": "run42-customers"
+     }
+    ],
+    "responses": {
+     "200": {
+      "description": "OK",
+      "content": {
+       "application/json": {
+        "schema": {
+         "type": "object",
+         "required": [
+          "key",
+          "exhausted",
+          "index",
+          "count",
+          "pass",
+          "record"
+         ],
+         "properties": {
+          "key": {
+           "type": "string"
+          },
+          "exhausted": {
+           "type": "boolean"
+          },
+          "empty": {
+           "type": "boolean"
+          },
+          "index": {
+           "type": "integer",
+           "nullable": true
+          },
+          "count": {
+           "type": "integer"
+          },
+          "pass": {
+           "type": "integer",
+           "nullable": true
+          },
+          "record": {
+           "type": "object",
+           "nullable": true,
+           "description": "The record, or null when there is none.",
+           "required": [
+            "key",
+            "index",
+            "createdTime"
+           ],
+           "properties": {
+            "key": {
+             "type": "string"
+            },
+            "index": {
+             "type": "integer"
+            },
+            "createdTime": {
+             "type": "integer"
+            }
+           },
+           "additionalProperties": true
+          },
+          "message": {
+           "type": "string"
+          },
+          "wrapped": {
+           "type": "boolean"
+          },
+          "remaining": {
+           "type": "integer"
+          }
+         }
+        },
+        "example": {
+         "key": "run42-accounts",
+         "exhausted": false,
+         "index": 1,
+         "count": 3,
+         "pass": 2,
+         "wrapped": true,
+         "remaining": 2,
+         "record": {
+          "username": "tester01",
+          "password": "Pa55-1",
+          "key": "run42-accounts",
+          "index": 1,
+          "createdTime": 1790000000
+         }
+        }
+       }
+      }
+     },
+     "400": {
+      "$ref": "#/components/responses/Error"
+     }
+    }
+   }
+  },
+  "/lists/random": {
+   "get": {
+    "tags": [
+     "lists"
+    ],
+    "operationId": "listsRandom",
+    "summary": "A random record, without consuming it",
+    "description": "Returns a uniformly random record from index 1..count. The pop pointer is not moved. An empty key returns 200 with `empty: true` and `record: null`.",
+    "parameters": [
+     {
+      "name": "key",
+      "in": "query",
+      "required": true,
+      "description": "Caller-chosen namespace (a test run, team or data set). 1-128 characters: letters, digits and . _ - : @ + =, starting with a letter, digit or +. Case-sensitive.",
+      "schema": {
+       "type": "string"
+      },
+      "example": "run42-customers"
+     }
+    ],
+    "responses": {
+     "200": {
+      "description": "OK",
+      "content": {
+       "application/json": {
+        "schema": {
+         "type": "object",
+         "required": [
+          "key",
+          "empty",
+          "count",
+          "index",
+          "record"
+         ],
+         "properties": {
+          "key": {
+           "type": "string"
+          },
+          "empty": {
+           "type": "boolean"
+          },
+          "count": {
+           "type": "integer"
+          },
+          "index": {
+           "type": "integer",
+           "nullable": true
+          },
+          "record": {
+           "type": "object",
+           "nullable": true,
+           "description": "The record, or null when there is none.",
+           "required": [
+            "key",
+            "index",
+            "createdTime"
+           ],
+           "properties": {
+            "key": {
+             "type": "string"
+            },
+            "index": {
+             "type": "integer"
+            },
+            "createdTime": {
+             "type": "integer"
+            }
+           },
+           "additionalProperties": true
+          },
+          "message": {
+           "type": "string"
+          }
+         }
+        },
+        "example": {
+         "key": "run42-customers",
+         "empty": false,
+         "count": 3,
+         "index": 2,
+         "record": {
+          "email": "bob@example.com",
+          "key": "run42-customers",
+          "index": 2,
+          "createdTime": 1790000000
+         }
+        }
+       }
+      }
+     },
+     "400": {
+      "$ref": "#/components/responses/Error"
+     }
+    }
+   }
+  },
+  "/lists/list": {
+   "get": {
+    "tags": [
+     "lists"
+    ],
+    "operationId": "listsList",
+    "summary": "Read the records of a key (paged for large keys)",
+    "description": "Returns `count`, `nextPop` (index the next pop returns; null for an unknown key) and the records from `start`. A response stops at about 4 MB: then `truncated` is true and `nextStart` is the index to continue from. `nextStart` is also set when `limit` stopped the page early. Variables are no longer included - see `lists/vars/list`.",
+    "parameters": [
+     {
+      "name": "key",
+      "in": "query",
+      "required": true,
+      "description": "Caller-chosen namespace (a test run, team or data set). 1-128 characters: letters, digits and . _ - : @ + =, starting with a letter, digit or +. Case-sensitive.",
+      "schema": {
+       "type": "string"
+      },
+      "example": "run42-customers"
+     },
+     {
+      "name": "start",
+      "in": "query",
+      "required": false,
+      "description": "First index to return (1-based).",
+      "schema": {
+       "type": "integer",
+       "minimum": 1,
+       "default": 1
+      }
+     },
+     {
+      "name": "limit",
+      "in": "query",
+      "required": false,
+      "description": "Maximum records to return. Leave out for all (subject to the ~4 MB cap).",
+      "schema": {
+       "type": "integer",
+       "minimum": 1
+      },
+      "example": 10
+     }
+    ],
+    "responses": {
+     "200": {
+      "description": "OK",
+      "content": {
+       "application/json": {
+        "schema": {
+         "type": "object",
+         "required": [
+          "key",
+          "count",
+          "nextPop",
+          "start",
+          "returned",
+          "truncated",
+          "nextStart",
+          "importRef",
+          "records"
+         ],
+         "properties": {
+          "key": {
+           "type": "string"
+          },
+          "count": {
+           "type": "integer"
+          },
+          "nextPop": {
+           "type": "integer",
+           "nullable": true
+          },
+          "start": {
+           "type": "integer"
+          },
+          "returned": {
+           "type": "integer"
+          },
+          "truncated": {
+           "type": "boolean"
+          },
+          "nextStart": {
+           "type": "integer",
+           "nullable": true
+          },
+          "importRef": {
+           "type": "string",
+           "nullable": true
+          },
+          "records": {
+           "type": "array",
+           "items": {
+            "$ref": "#/components/schemas/ListRecord"
+           }
+          }
+         }
+        },
+        "example": {
+         "key": "run42-customers",
+         "count": 3,
+         "nextPop": 2,
+         "start": 1,
+         "returned": 2,
+         "truncated": false,
+         "nextStart": 3,
+         "importRef": "20260922T031500Z-k3x9qa",
+         "records": [
+          {
+           "email": "alice@example.com",
+           "key": "run42-customers",
+           "index": 1,
+           "createdTime": 1790000000
+          },
+          {
+           "email": "bob@example.com",
+           "key": "run42-customers",
+           "index": 2,
+           "createdTime": 1790000000
+          }
+         ]
+        }
+       }
+      }
+     },
+     "400": {
+      "$ref": "#/components/responses/Error"
+     }
+    }
+   }
+  },
+  "/lists/reset": {
+   "get": {
+    "tags": [
+     "lists"
+    ],
+    "operationId": "listsReset",
+    "summary": "Rewind the pop pointer to record 1",
+    "description": "Sets the pop pointer back to 1; the records are kept. A key with no records returns 200 with `reset: false`.",
+    "parameters": [
+     {
+      "name": "key",
+      "in": "query",
+      "required": true,
+      "description": "Caller-chosen namespace (a test run, team or data set). 1-128 characters: letters, digits and . _ - : @ + =, starting with a letter, digit or +. Case-sensitive.",
+      "schema": {
+       "type": "string"
+      },
+      "example": "run42-customers"
+     }
+    ],
+    "responses": {
+     "200": {
+      "description": "OK",
+      "content": {
+       "application/json": {
+        "schema": {
+         "type": "object",
+         "required": [
+          "key",
+          "reset",
+          "count",
+          "nextPop",
+          "message"
+         ],
+         "properties": {
+          "key": {
+           "type": "string"
+          },
+          "reset": {
+           "type": "boolean"
+          },
+          "count": {
+           "type": "integer"
+          },
+          "nextPop": {
+           "type": "integer",
+           "nullable": true
+          },
+          "message": {
+           "type": "string"
+          }
+         }
+        },
+        "example": {
+         "key": "run42-customers",
+         "reset": true,
+         "count": 3,
+         "nextPop": 1,
+         "message": "Pointer reset; the next pop returns index 1."
+        }
+       }
+      }
+     },
+     "400": {
+      "$ref": "#/components/responses/Error"
+     }
+    }
+   }
+  },
+  "/lists/clear": {
+   "get": {
+    "tags": [
+     "lists"
+    ],
+    "operationId": "listsClear",
+    "summary": "Delete every record of a key",
+    "description": "Deletes the key's records and its pop pointer; the key reads as empty as soon as the call returns. Records loaded by `lists/import` can number 100K+, so those are deleted in the background (`backgroundDelete` is how many). Variables, counters and the cleanup register of the same key are not touched.",
+    "parameters": [
+     {
+      "name": "key",
+      "in": "query",
+      "required": true,
+      "description": "Caller-chosen namespace (a test run, team or data set). 1-128 characters: letters, digits and . _ - : @ + =, starting with a letter, digit or +. Case-sensitive.",
+      "schema": {
+       "type": "string"
+      },
+      "example": "run42-customers"
+     }
+    ],
+    "responses": {
+     "200": {
+      "description": "OK",
+      "content": {
+       "application/json": {
+        "schema": {
+         "type": "object",
+         "required": [
+          "key",
+          "cleared",
+          "deleted",
+          "backgroundDelete",
+          "message"
+         ],
+         "properties": {
+          "key": {
+           "type": "string"
+          },
+          "cleared": {
+           "type": "boolean"
+          },
+          "deleted": {
+           "type": "integer"
+          },
+          "backgroundDelete": {
+           "type": "integer"
+          },
+          "message": {
+           "type": "string"
+          }
+         }
+        },
+        "example": {
+         "key": "run42-customers",
+         "cleared": true,
+         "deleted": 0,
+         "backgroundDelete": 100000,
+         "message": "Key cleared: it reads as empty now. Its imported records are being deleted in the background."
+        }
+       }
+      }
+     },
+     "400": {
+      "$ref": "#/components/responses/Error"
+     }
+    }
+   }
+  },
+  "/lists/codes": {
+   "get": {
+    "tags": [
+     "lists"
+    ],
+    "operationId": "listsCodes",
+    "summary": "Random uppercase alphanumeric codes (3, 4, 6, 8 and 10 characters)",
+    "description": "Stateless; takes no parameters. Each call returns five independently generated random codes drawn uniformly from A-Z0-9. Pick the length that matches the uniqueness your test needs: `rand3` is human-memorable for tiny runs, `rand10` is effectively unique at any realistic test volume. Codes can be concatenated (rand4 + rand10). A `rand10` also makes a good per-run `key`.",
+    "parameters": [],
+    "responses": {
+     "200": {
+      "description": "OK",
+      "content": {
+       "application/json": {
+        "schema": {
+         "type": "object",
+         "required": [
+          "rand3",
+          "rand4",
+          "rand6",
+          "rand8",
+          "rand10"
+         ],
+         "properties": {
+          "rand3": {
+           "type": "string"
+          },
+          "rand4": {
+           "type": "string"
+          },
+          "rand6": {
+           "type": "string"
+          },
+          "rand8": {
+           "type": "string"
+          },
+          "rand10": {
+           "type": "string"
+          }
+         }
+        },
+        "example": {
+         "rand3": "K7Q",
+         "rand4": "9XCT",
+         "rand6": "M2VJ8P",
+         "rand8": "R0DKW4YB",
+         "rand10": "T6ZQH1N9SF"
+        }
+       }
+      }
+     }
+    }
+   }
+  },
+  "/lists/vars/set": {
+   "get": {
+    "tags": [
+     "lists"
+    ],
+    "operationId": "listsVarsSet",
+    "summary": "Save a run-scoped variable under a key",
+    "description": "Creates or overwrites the variable `name` under `key`. `value` is required but may be empty. URL-encode it.",
+    "parameters": [
+     {
+      "name": "key",
+      "in": "query",
+      "required": true,
+      "description": "Caller-chosen namespace (a test run, team or data set). 1-128 characters: letters, digits and . _ - : @ + =, starting with a letter, digit or +. Case-sensitive.",
+      "schema": {
+       "type": "string"
+      },
+      "example": "run42-customers"
+     },
+     {
+      "name": "name",
+      "in": "query",
+      "required": true,
+      "description": "Variable name (1-256 characters).",
+      "schema": {
+       "type": "string"
+      },
+      "example": "baseUrl"
+     },
+     {
+      "name": "value",
+      "in": "query",
+      "required": true,
+      "description": "The value (URL-encoded). May be empty.",
+      "schema": {
+       "type": "string"
+      },
+      "example": "https://sut.example.com/api"
+     }
+    ],
+    "responses": {
+     "200": {
+      "description": "OK",
+      "content": {
+       "application/json": {
+        "schema": {
+         "type": "object",
+         "required": [
+          "key",
+          "name",
+          "value",
+          "savedTime"
+         ],
+         "properties": {
+          "key": {
+           "type": "string"
+          },
+          "name": {
+           "type": "string"
+          },
+          "value": {
+           "type": "string"
+          },
+          "savedTime": {
+           "type": "integer"
+          }
+         }
+        },
+        "example": {
+         "key": "run42-customers",
+         "name": "baseUrl",
+         "value": "https://sut.example.com/api",
+         "savedTime": 1790000000
+        }
+       }
+      }
+     },
+     "400": {
+      "$ref": "#/components/responses/Error"
+     }
+    }
+   }
+  },
+  "/lists/vars/get": {
+   "get": {
+    "tags": [
+     "lists"
+    ],
+    "operationId": "listsVarsGet",
+    "summary": "Read a variable, optionally waiting for it to be set or to equal a value",
+    "description": "Returns the variable's value (always a string). Without wait or equals, a variable that was never set is a 404. With wait and/or equals the answer is always 200: exists is false while the variable has never been set, and waitedMs says how long the request was held. With equals, matched says whether the value equals it (exact, case-sensitive). With wait=N the request is held up to N seconds and returns as soon as the value equals `equals`, or changes to something else (so a setup flag going from 0 to failed is reported at once); without equals, as soon as the variable exists. Reads are strongly consistent. Typical use - the test-cycle gate (llms.txt recipe 4.12): vars/get?key=<project>&name=setupReady&equals=1&wait=20, repeated until matched is true.",
+    "parameters": [
+     {
+      "name": "key",
+      "in": "query",
+      "required": true,
+      "description": "Caller-chosen namespace (a test run, team or data set). 1-128 characters: letters, digits and . _ - : @ + =, starting with a letter, digit or +. Case-sensitive.",
+      "schema": {
+       "type": "string"
+      },
+      "example": "run42-customers"
+     },
+     {
+      "name": "name",
+      "in": "query",
+      "required": true,
+      "description": "Variable name (1-256 characters).",
+      "schema": {
+       "type": "string"
+      },
+      "example": "baseUrl"
+     },
+     {
+      "name": "equals",
+      "in": "query",
+      "required": false,
+      "description": "Value to compare with (exact, case-sensitive). The response gains matched; with wait, the request returns as soon as the value equals this or changes to anything else.",
+      "schema": {
+       "type": "string"
+      },
+      "example": "1"
+     },
+     {
+      "name": "wait",
+      "in": "query",
+      "required": false,
+      "description": "Seconds to hold the request open, 0-20, default 0; larger values are clamped (API Gateway abandons a request at 29 s). With equals: until the value equals it or changes. Without equals: until the variable exists.",
+      "schema": {
+       "type": "integer",
+       "minimum": 0,
+       "maximum": 20,
+       "default": 0
+      },
+      "example": 20
+     }
+    ],
+    "responses": {
+     "200": {
+      "description": "OK",
+      "content": {
+       "application/json": {
+        "schema": {
+         "type": "object",
+         "required": [
+          "key",
+          "name",
+          "value",
+          "savedTime"
+         ],
+         "properties": {
+          "key": {
+           "type": "string"
+          },
+          "name": {
+           "type": "string"
+          },
+          "value": {
+           "type": "string",
+           "nullable": true,
+           "description": "null when the variable has never been set (wait/equals only)."
+          },
+          "savedTime": {
+           "type": "integer",
+           "nullable": true
+          },
+          "exists": {
+           "type": "boolean",
+           "description": "wait/equals only: false while the variable has never been set."
+          },
+          "equals": {
+           "type": "string",
+           "description": "equals only: the value compared with."
+          },
+          "matched": {
+           "type": "boolean",
+           "description": "equals only: value equals `equals`."
+          },
+          "waitedMs": {
+           "type": "integer",
+           "description": "wait/equals only: how long the request was held."
+          }
+         }
+        },
+        "examples": {
+         "plain": {
+          "summary": "vars/get?key=run42&name=baseUrl",
+          "value": {
+           "key": "run42-customers",
+           "name": "baseUrl",
+           "value": "https://sut.example.com/api",
+           "savedTime": 1790000000
+          }
+         },
+         "gate": {
+          "summary": "vars/get?key=verdant-7QK2&name=setupReady&equals=1&wait=20 (setup finished 3.4 s into the wait)",
+          "value": {
+           "key": "verdant-7QK2",
+           "name": "setupReady",
+           "value": "1",
+           "savedTime": 1790000123,
+           "exists": true,
+           "equals": "1",
+           "matched": true,
+           "waitedMs": 3412
+          }
+         },
+         "notYet": {
+          "summary": "The same, when initiation has not started (the variable was never set) and wait ran out",
+          "value": {
+           "key": "verdant-7QK2",
+           "name": "setupReady",
+           "value": null,
+           "savedTime": null,
+           "exists": false,
+           "equals": "1",
+           "matched": false,
+           "waitedMs": 20004
+          }
+         }
+        }
+       }
+      }
+     },
+     "400": {
+      "$ref": "#/components/responses/Error"
+     },
+     "404": {
+      "description": "Variable not found (only without wait and equals).",
+      "content": {
+       "application/json": {
+        "schema": {
+         "$ref": "#/components/schemas/Error"
+        }
+       }
+      }
+     }
+    }
+   }
+  },
+  "/lists/vars/list": {
+   "get": {
+    "tags": [
+     "lists"
+    ],
+    "operationId": "listsVarsList",
+    "summary": "List every variable of a key",
+    "description": "All variables saved under the key, with their values. (Previously part of the list response.)",
+    "parameters": [
+     {
+      "name": "key",
+      "in": "query",
+      "required": true,
+      "description": "Caller-chosen namespace (a test run, team or data set). 1-128 characters: letters, digits and . _ - : @ + =, starting with a letter, digit or +. Case-sensitive.",
+      "schema": {
+       "type": "string"
+      },
+      "example": "run42-customers"
+     }
+    ],
+    "responses": {
+     "200": {
+      "description": "OK",
+      "content": {
+       "application/json": {
+        "schema": {
+         "type": "object",
+         "required": [
+          "key",
+          "count",
+          "variables"
+         ],
+         "properties": {
+          "key": {
+           "type": "string"
+          },
+          "count": {
+           "type": "integer"
+          },
+          "variables": {
+           "type": "array",
+           "items": {
+            "type": "object",
+            "required": [
+             "name",
+             "value",
+             "savedTime"
+            ],
+            "properties": {
+             "name": {
+              "type": "string"
+             },
+             "value": {
+              "type": "string"
+             },
+             "savedTime": {
+              "type": "integer"
+             }
+            }
+           }
+          }
+         }
+        },
+        "example": {
+         "key": "run42-customers",
+         "count": 2,
+         "variables": [
+          {
+           "name": "baseUrl",
+           "value": "https://sut.example.com/api",
+           "savedTime": 1790000000
+          },
+          {
+           "name": "token",
+           "value": "abc123",
+           "savedTime": 1790000000
+          }
+         ]
+        }
+       }
+      }
+     },
+     "400": {
+      "$ref": "#/components/responses/Error"
+     }
+    }
+   }
+  },
+  "/lists/counters/add": {
+   "get": {
+    "tags": [
+     "lists"
+    ],
+    "operationId": "listsCountersAdd",
+    "summary": "Advance a counter atomically",
+    "description": "Applies the increment with a single DynamoDB atomic ADD - no read first - so concurrent virtual users cannot lose each other's updates. Returns the value AFTER the change, which makes it usable as a sequence-number generator. One counter is one item, so it accepts roughly 1,000 increments per second; for unique values at load-test volume use `lists/codes`, which needs no coordination. A counter is created on first use.",
+    "parameters": [
+     {
+      "name": "key",
+      "in": "query",
+      "required": true,
+      "description": "Caller-chosen namespace (a test run, team or data set). 1-128 characters: letters, digits and . _ - : @ + =, starting with a letter, digit or +. Case-sensitive.",
+      "schema": {
+       "type": "string"
+      },
+      "example": "run42-customers"
+     },
+     {
+      "name": "name",
+      "in": "query",
+      "required": false,
+      "description": "Counter name within the key: 1-64 characters of letters, digits, '.', '_' or '-'. Defaults to `default`.",
+      "schema": {
+       "type": "string",
+       "default": "default"
+      },
+      "example": "orders"
+     },
+     {
+      "name": "increment",
+      "in": "query",
+      "required": false,
+      "description": "Whole number to add; may be negative or zero. Default 1. Fractions are rejected.",
+      "schema": {
+       "type": "integer",
+       "default": 1
+      },
+      "example": 1
+     }
+    ],
+    "responses": {
+     "200": {
+      "description": "OK",
+      "content": {
+       "application/json": {
+        "schema": {
+         "type": "object",
+         "required": [
+          "key",
+          "name",
+          "increment",
+          "value",
+          "updatedTime"
+         ],
+         "properties": {
+          "key": {
+           "type": "string"
+          },
+          "name": {
+           "type": "string"
+          },
+          "increment": {
+           "type": "integer"
+          },
+          "value": {
+           "type": "integer"
+          },
+          "updatedTime": {
+           "type": "integer"
+          }
+         }
+        },
+        "example": {
+         "key": "run42-customers",
+         "name": "orders",
+         "increment": 1,
+         "value": 42,
+         "updatedTime": 1790000000
+        }
+       }
+      }
+     },
+     "400": {
+      "$ref": "#/components/responses/Error"
+     }
+    }
+   }
+  },
+  "/lists/counters/get": {
+   "get": {
+    "tags": [
+     "lists"
+    ],
+    "operationId": "listsCountersGet",
+    "summary": "Read a counter without changing it",
+    "description": "Returns the current value. A counter that has never been incremented reads as 0 with `exists: false` (not 404), so a script can read one before anything has written to it.",
+    "parameters": [
+     {
+      "name": "key",
+      "in": "query",
+      "required": true,
+      "description": "Caller-chosen namespace (a test run, team or data set). 1-128 characters: letters, digits and . _ - : @ + =, starting with a letter, digit or +. Case-sensitive.",
+      "schema": {
+       "type": "string"
+      },
+      "example": "run42-customers"
+     },
+     {
+      "name": "name",
+      "in": "query",
+      "required": false,
+      "description": "Counter name within the key: 1-64 characters of letters, digits, '.', '_' or '-'. Defaults to `default`.",
+      "schema": {
+       "type": "string",
+       "default": "default"
+      },
+      "example": "orders"
+     }
+    ],
+    "responses": {
+     "200": {
+      "description": "OK",
+      "content": {
+       "application/json": {
+        "schema": {
+         "type": "object",
+         "required": [
+          "key",
+          "name",
+          "value",
+          "exists",
+          "updatedTime"
+         ],
+         "properties": {
+          "key": {
+           "type": "string"
+          },
+          "name": {
+           "type": "string"
+          },
+          "value": {
+           "type": "integer"
+          },
+          "exists": {
+           "type": "boolean"
+          },
+          "updatedTime": {
+           "type": "integer",
+           "nullable": true
+          }
+         }
+        },
+        "example": {
+         "key": "run42-customers",
+         "name": "orders",
+         "value": 42,
+         "exists": true,
+         "updatedTime": 1790000000
+        }
+       }
+      }
+     },
+     "400": {
+      "$ref": "#/components/responses/Error"
+     }
+    }
+   }
+  },
+  "/lists/cleanup/push": {
+   "get": {
+    "tags": [
+     "lists"
+    ],
+    "operationId": "listsCleanupPush",
+    "summary": "Register a record that will need removing",
+    "description": "Call this from the create step of a test with whatever identifies the created record in the system under test. Entries are handed back by `lists/cleanup/pop` in the order they were saved. Duplicates are kept as separate entries: the same identifier created twice is two records to remove.",
+    "parameters": [
+     {
+      "name": "key",
+      "in": "query",
+      "required": true,
+      "description": "Caller-chosen namespace (a test run, team or data set). 1-128 characters: letters, digits and . _ - : @ + =, starting with a letter, digit or +. Case-sensitive.",
+      "schema": {
+       "type": "string"
+      },
+      "example": "run42-customers"
+     },
+     {
+      "name": "value",
+      "in": "query",
+      "required": true,
+      "description": "Identifier of the record to remove later (up to 1024 characters).",
+      "schema": {
+       "type": "string"
+      },
+      "example": "ORDER-001"
+     },
+     {
+      "name": "note",
+      "in": "query",
+      "required": false,
+      "description": "Optional free text carried to the pop and the listing (up to 1024 characters).",
+      "schema": {
+       "type": "string"
+      },
+      "example": "created by VU7"
+     }
+    ],
+    "responses": {
+     "200": {
+      "description": "OK",
+      "content": {
+       "application/json": {
+        "schema": {
+         "type": "object",
+         "required": [
+          "key",
+          "index",
+          "value",
+          "note",
+          "savedTime",
+          "registered"
+         ],
+         "properties": {
+          "key": {
+           "type": "string"
+          },
+          "index": {
+           "type": "integer"
+          },
+          "value": {
+           "type": "string"
+          },
+          "note": {
+           "type": "string",
+           "nullable": true
+          },
+          "savedTime": {
+           "type": "integer"
+          },
+          "registered": {
+           "type": "boolean"
+          }
+         }
+        },
+        "example": {
+         "key": "run42-customers",
+         "index": 1,
+         "value": "ORDER-001",
+         "note": "created by VU7",
+         "savedTime": 1790000000,
+         "registered": true
+        }
+       }
+      }
+     },
+     "400": {
+      "$ref": "#/components/responses/Error"
+     }
+    }
+   }
+  },
+  "/lists/cleanup/pop": {
+   "get": {
+    "tags": [
+     "lists"
+    ],
+    "operationId": "listsCleanupPop",
+    "summary": "Hand back the next record to remove",
+    "description": "Returns ONE registered record at a time, oldest first, and stamps `removedTime` as it is handed over. The claim is a single conditional write, so two cleanup scripts running at once never receive the same record. Loop until `exhausted: true` (HTTP 200). Because the stamp happens on handover, a cleanup script that dies midway leaves those records marked removed - reconcile with `lists/cleanup/list` if that matters.",
+    "parameters": [
+     {
+      "name": "key",
+      "in": "query",
+      "required": true,
+      "description": "Caller-chosen namespace (a test run, team or data set). 1-128 characters: letters, digits and . _ - : @ + =, starting with a letter, digit or +. Case-sensitive.",
+      "schema": {
+       "type": "string"
+      },
+      "example": "run42-customers"
+     }
+    ],
+    "responses": {
+     "200": {
+      "description": "OK",
+      "content": {
+       "application/json": {
+        "schema": {
+         "type": "object",
+         "required": [
+          "key",
+          "exhausted",
+          "index",
+          "value"
+         ],
+         "properties": {
+          "key": {
+           "type": "string"
+          },
+          "exhausted": {
+           "type": "boolean"
+          },
+          "index": {
+           "type": "integer",
+           "nullable": true
+          },
+          "value": {
+           "type": "string",
+           "nullable": true
+          },
+          "note": {
+           "type": "string",
+           "nullable": true
+          },
+          "savedTime": {
+           "type": "integer"
+          },
+          "removedTime": {
+           "type": "integer"
+          },
+          "message": {
+           "type": "string"
+          }
+         }
+        },
+        "example": {
+         "key": "run42-customers",
+         "exhausted": false,
+         "index": 1,
+         "value": "ORDER-001",
+         "note": "created by VU7",
+         "savedTime": 1790000000,
+         "removedTime": 1790003600
+        }
+       }
+      }
+     },
+     "400": {
+      "$ref": "#/components/responses/Error"
+     }
+    }
+   }
+  },
+  "/lists/cleanup/list": {
+   "get": {
+    "tags": [
+     "lists"
+    ],
+    "operationId": "listsCleanupList",
+    "summary": "The cleanup audit trail",
+    "description": "Every registered value with `savedTime` and `removedTime` (null while pending), plus saved/removed/pending totals over everything regardless of the filter. Stops at about 5,000 entries (`truncated: true`).",
+    "parameters": [
+     {
+      "name": "key",
+      "in": "query",
+      "required": true,
+      "description": "Caller-chosen namespace (a test run, team or data set). 1-128 characters: letters, digits and . _ - : @ + =, starting with a letter, digit or +. Case-sensitive.",
+      "schema": {
+       "type": "string"
+      },
+      "example": "run42-customers"
+     },
+     {
+      "name": "status",
+      "in": "query",
+      "required": false,
+      "description": "Filter the returned records.",
+      "schema": {
+       "type": "string",
+       "enum": [
+        "all",
+        "pending",
+        "removed"
+       ],
+       "default": "all"
+      },
+      "example": "pending"
+     }
+    ],
+    "responses": {
+     "200": {
+      "description": "OK",
+      "content": {
+       "application/json": {
+        "schema": {
+         "type": "object",
+         "required": [
+          "key",
+          "saved",
+          "removed",
+          "pending",
+          "nextPop",
+          "filter",
+          "returned",
+          "truncated",
+          "records"
+         ],
+         "properties": {
+          "key": {
+           "type": "string"
+          },
+          "saved": {
+           "type": "integer"
+          },
+          "removed": {
+           "type": "integer"
+          },
+          "pending": {
+           "type": "integer"
+          },
+          "nextPop": {
+           "type": "integer"
+          },
+          "filter": {
+           "type": "string"
+          },
+          "returned": {
+           "type": "integer"
+          },
+          "truncated": {
+           "type": "boolean"
+          },
+          "records": {
+           "type": "array",
+           "items": {
+            "type": "object",
+            "required": [
+             "index",
+             "value",
+             "note",
+             "savedTime",
+             "removedTime"
+            ],
+            "properties": {
+             "index": {
+              "type": "integer"
+             },
+             "value": {
+              "type": "string"
+             },
+             "note": {
+              "type": "string",
+              "nullable": true
+             },
+             "savedTime": {
+              "type": "integer"
+             },
+             "removedTime": {
+              "type": "integer",
+              "nullable": true
+             }
+            }
+           }
+          }
+         }
+        },
+        "example": {
+         "key": "run42-customers",
+         "saved": 2,
+         "removed": 1,
+         "pending": 1,
+         "nextPop": 2,
+         "filter": "pending",
+         "returned": 1,
+         "truncated": false,
+         "records": [
+          {
+           "index": 2,
+           "value": "ORDER-002",
+           "note": null,
+           "savedTime": 1790000000,
+           "removedTime": null
+          }
+         ]
+        }
+       }
+      }
+     },
+     "400": {
+      "$ref": "#/components/responses/Error"
+     }
+    }
+   }
+  },
+  "/lists/upload": {
+   "get": {
+    "tags": [
+     "lists"
+    ],
+    "operationId": "listsUpload",
+    "summary": "Drag-and-drop CSV/JSON loader (HTML page)",
+    "description": "Browser page for humans: how the file must look, a drop zone, progress, and the result (skipped rows, warnings, record 1 as pop returns it, ready-to-use URLs). The page switches between CSV and JSON; `format` preselects one. Uploads go straight to S3 via `lists/upload/url`, so files up to 50 MB work.",
+    "parameters": [
+     {
+      "name": "format",
+      "in": "query",
+      "required": false,
+      "description": "Format to preselect.",
+      "schema": {
+       "type": "string",
+       "enum": [
+        "csv",
+        "json"
+       ],
+       "default": "csv"
+      },
+      "example": "json"
+     }
+    ],
+    "responses": {
+     "200": {
+      "description": "HTML page",
+      "content": {
+       "text/html": {
+        "schema": {
+         "type": "string"
+        }
+       }
+      }
+     },
+     "400": {
+      "$ref": "#/components/responses/Error"
+     }
+    }
+   }
+  },
+  "/lists/upload/url": {
+   "get": {
+    "tags": [
+     "lists"
+    ],
+    "operationId": "listsUploadUrl",
+    "summary": "Presigned S3 POST for a CSV/JSON file of up to 50 MB",
+    "description": "Returns a presigned S3 POST. Send multipart/form-data to `url` with every entry of `fields` first and the file LAST as the part named `file`; S3 answers 201. Then GET `next` (= `lists/import` with key, format and ref). The presign is valid for 15 minutes.",
+    "parameters": [
+     {
+      "name": "key",
+      "in": "query",
+      "required": true,
+      "description": "Caller-chosen namespace (a test run, team or data set). 1-128 characters: letters, digits and . _ - : @ + =, starting with a letter, digit or +. Case-sensitive.",
+      "schema": {
+       "type": "string"
+      },
+      "example": "run42-customers"
+     },
+     {
+      "name": "format",
+      "in": "query",
+      "required": true,
+      "description": "Which importer the file is for.",
+      "schema": {
+       "type": "string",
+       "enum": [
+        "csv",
+        "json"
+       ]
+      },
+      "example": "csv"
+     },
+     {
+      "name": "size",
+      "in": "query",
+      "required": false,
+      "description": "Optional file size in bytes, to fail fast over the 51200 KB cap. S3 enforces the cap either way.",
+      "schema": {
+       "type": "integer",
+       "minimum": 0
+      },
+      "example": 2048000
+     }
+    ],
+    "responses": {
+     "200": {
+      "description": "OK",
+      "content": {
+       "application/json": {
+        "schema": {
+         "type": "object",
+         "required": [
+          "key",
+          "ref",
+          "format",
+          "method",
+          "url",
+          "fields",
+          "maxKb",
+          "expiresInSeconds",
+          "expiresTime",
+          "next",
+          "note"
+         ],
+         "properties": {
+          "key": {
+           "type": "string"
+          },
+          "ref": {
+           "type": "string"
+          },
+          "format": {
+           "type": "string"
+          },
+          "method": {
+           "type": "string"
+          },
+          "url": {
+           "type": "string"
+          },
+          "fields": {
+           "type": "object",
+           "additionalProperties": {
+            "type": "string"
+           }
+          },
+          "maxKb": {
+           "type": "integer"
+          },
+          "expiresInSeconds": {
+           "type": "integer"
+          },
+          "expiresTime": {
+           "type": "integer"
+          },
+          "next": {
+           "type": "string"
+          },
+          "note": {
+           "type": "string"
+          }
+         }
+        },
+        "example": {
+         "key": "run42-customers",
+         "ref": "20260922T031500Z-k3x9qa",
+         "format": "csv",
+         "method": "POST",
+         "url": "https://example-imports-bucket.s3.ap-southeast-2.amazonaws.com/",
+         "fields": {
+          "key": "imports/run42-customers/20260922T031500Z-k3x9qa.csv",
+          "success_action_status": "201",
+          "x-amz-algorithm": "AWS4-HMAC-SHA256",
+          "x-amz-credential": "ASIAEXAMPLE/20260922/ap-southeast-2/s3/aws4_request",
+          "x-amz-date": "20260922T031500Z",
+          "x-amz-security-token": "IQoJb3JpZ2luX2Vj...",
+          "policy": "eyJleHBpcmF0aW9uIjoi...",
+          "x-amz-signature": "3f1c...e9a0"
+         },
+         "maxKb": 51200,
+         "expiresInSeconds": 900,
+         "expiresTime": 1790000900,
+         "next": "https://api.example.com/v1/lists/import?key=run42-customers&format=csv&ref=20260922T031500Z-k3x9qa",
+         "note": "POST multipart/form-data to url: every entry of fields first, the file LAST as the part named \"file\". S3 answers 201; then GET next."
+        }
+       }
+      }
+     },
+     "400": {
+      "$ref": "#/components/responses/Error"
+     }
+    }
+   }
+  },
+  "/lists/import": {
+   "get": {
+    "tags": [
+     "lists"
+    ],
+    "operationId": "listsImport",
+    "summary": "Replace a key's records from an uploaded file (ref)",
+    "description": "LOADING ALWAYS REPLACES: every record under the key is swapped for the file's records and the pop pointer rewound to 1, in one atomic metadata write, so readers see the old set or the new set, never a mix; a failed import changes nothing. The import runs in the background; the call waits up to `wait` seconds and answers 200 `state: done` with the result, 202 `queued`/`running` (poll `lists/import/status`), or 422 `failed`. Each record is returned by pop/random/list with its fields at the top level plus `key`, `index`, `createdTime` (a column or top-level property with one of those names is renamed `key_2` etc. and reported). CSV: the first row is the header; every value is text exactly as written (leading zeros kept); RFC 4180 quoting; comma/semicolon/tab/pipe auto-detected; UTF-8, Windows-1252 or UTF-16 detected; short rows padded (warning); rows with extra non-empty values skipped and reported by line; an unclosed quote fails the import. JSON: an array of objects, JSON Lines, an object wrapping one array ({\"records\": [...]}), or a single object (one record); JSON types kept; non-objects become {\"value\": ...}; integers beyond 2^53 kept exactly as strings. Limits: 4096 KB body, 50 MB via upload/url, 350 KB per record, 1,000,000 records. The file is kept 90 days for reload by ref. GET form: imports a file already uploaded with `lists/upload/url`, or reloads an earlier one.",
+    "parameters": [
+     {
+      "name": "key",
+      "in": "query",
+      "required": true,
+      "description": "Caller-chosen namespace (a test run, team or data set). 1-128 characters: letters, digits and . _ - : @ + =, starting with a letter, digit or +. Case-sensitive.",
+      "schema": {
+       "type": "string"
+      },
+      "example": "run42-customers"
+     },
+     {
+      "name": "format",
+      "in": "query",
+      "required": true,
+      "description": "File format.",
+      "schema": {
+       "type": "string",
+       "enum": [
+        "csv",
+        "json"
+       ]
+      },
+      "example": "csv"
+     },
+     {
+      "name": "ref",
+      "in": "query",
+      "required": true,
+      "description": "Upload reference from `lists/upload/url`, or from an earlier import (files are kept 90 days).",
+      "schema": {
+       "type": "string"
+      },
+      "example": "20260922T031500Z-k3x9qa"
+     },
+     {
+      "name": "wait",
+      "in": "query",
+      "required": false,
+      "description": "Seconds to hold the call open for the result, 0-25 (clamped). Default 25. 0 returns at once with state `queued`. `true`/`false` are accepted as 25/0.",
+      "schema": {
+       "type": "string",
+       "default": "25"
+      },
+      "example": "25"
+     },
+     {
+      "name": "delimiter",
+      "in": "query",
+      "required": false,
+      "description": "CSV only: field delimiter. Leave out to auto-detect from the header row.",
+      "schema": {
+       "type": "string",
+       "enum": [
+        "comma",
+        "semicolon",
+        "tab",
+        "pipe"
+       ]
+      }
+     }
+    ],
+    "responses": {
+     "200": {
+      "description": "OK",
+      "content": {
+       "application/json": {
+        "schema": {
+         "type": "object",
+         "required": [
+          "key",
+          "ref",
+          "format",
+          "state",
+          "fileBytes",
+          "next"
+         ],
+         "properties": {
+          "key": {
+           "type": "string"
+          },
+          "ref": {
+           "type": "string"
+          },
+          "format": {
+           "type": "string"
+          },
+          "state": {
+           "type": "string"
+          },
+          "source": {
+           "type": "string"
+          },
+          "fileBytes": {
+           "type": "integer"
+          },
+          "options": {
+           "type": "object",
+           "properties": {}
+          },
+          "queuedTime": {
+           "type": "integer"
+          },
+          "updatedTime": {
+           "type": "integer"
+          },
+          "startedTime": {
+           "type": "integer"
+          },
+          "phase": {
+           "type": "string"
+          },
+          "total": {
+           "type": "integer"
+          },
+          "loaded": {
+           "type": "integer"
+          },
+          "shards": {
+           "type": "integer"
+          },
+          "finishedTime": {
+           "type": "integer"
+          },
+          "durationMs": {
+           "type": "integer"
+          },
+          "firstIndex": {
+           "type": "integer"
+          },
+          "lastIndex": {
+           "type": "integer"
+          },
+          "skippedCount": {
+           "type": "integer"
+          },
+          "skipped": {
+           "type": "array",
+           "items": {}
+          },
+          "warnings": {
+           "type": "array",
+           "items": {
+            "type": "string"
+           }
+          },
+          "encoding": {
+           "type": "string"
+          },
+          "delimiter": {
+           "type": "string"
+          },
+          "columns": {
+           "type": "array",
+           "items": {
+            "type": "string"
+           }
+          },
+          "blankRows": {
+           "type": "integer"
+          },
+          "replaced": {
+           "type": "object",
+           "required": [
+            "count",
+            "importRef"
+           ],
+           "properties": {
+            "count": {
+             "type": "integer"
+            },
+            "importRef": {
+             "type": "string",
+             "nullable": true
+            }
+           },
+           "nullable": true
+          },
+          "sample": {
+           "$ref": "#/components/schemas/ListRecord"
+          },
+          "next": {
+           "type": "object",
+           "required": [
+            "pop",
+            "random",
+            "reset",
+            "list",
+            "reload"
+           ],
+           "properties": {
+            "pop": {
+             "type": "string"
+            },
+            "random": {
+             "type": "string"
+            },
+            "reset": {
+             "type": "string"
+            },
+            "list": {
+             "type": "string"
+            },
+            "reload": {
+             "type": "string"
+            }
+           }
+          },
+          "shape": {
+           "type": "string"
+          }
+         }
+        },
+        "example": {
+         "key": "run42-customers",
+         "ref": "20260922T031500Z-k3x9qa",
+         "format": "csv",
+         "state": "done",
+         "phase": "done",
+         "source": "upload",
+         "fileBytes": 1843,
+         "options": {},
+         "queuedTime": 1790000000,
+         "startedTime": 1790000000,
+         "finishedTime": 1790000001,
+         "updatedTime": 1790000001,
+         "total": 3,
+         "loaded": 3,
+         "shards": 1,
+         "durationMs": 912,
+         "firstIndex": 1,
+         "lastIndex": 3,
+         "skippedCount": 0,
+         "skipped": [],
+         "warnings": [],
+         "encoding": "utf-8",
+         "delimiter": ",",
+         "columns": [
+          "email",
+          "customer_id",
+          "postcode"
+         ],
+         "blankRows": 0,
+         "replaced": {
+          "count": 120,
+          "importRef": null
+         },
+         "sample": {
+          "email": "alice@example.com",
+          "customer_id": "51824753556",
+          "postcode": "0800",
+          "key": "run42-customers",
+          "index": 1,
+          "createdTime": 1790000000
+         },
+         "next": {
+          "pop": "https://api.example.com/v1/lists/pop?key=run42-customers",
+          "random": "https://api.example.com/v1/lists/random?key=run42-customers",
+          "reset": "https://api.example.com/v1/lists/reset?key=run42-customers",
+          "list": "https://api.example.com/v1/lists/list?key=run42-customers&limit=10",
+          "reload": "https://api.example.com/v1/lists/import?key=run42-customers&format=csv&ref=20260922T031500Z-k3x9qa"
+         }
+        }
+       }
+      }
+     },
+     "400": {
+      "$ref": "#/components/responses/Error"
+     },
+     "404": {
+      "$ref": "#/components/responses/Error"
+     },
+     "202": {
+      "description": "Still queued or running after the wait. Poll `lists/import/status` with the returned ref.",
+      "content": {
+       "application/json": {
+        "schema": {
+         "type": "object",
+         "required": [
+          "key",
+          "ref",
+          "format",
+          "state",
+          "source",
+          "fileBytes",
+          "queuedTime",
+          "updatedTime"
+         ],
+         "properties": {
+          "key": {
+           "type": "string"
+          },
+          "ref": {
+           "type": "string"
+          },
+          "format": {
+           "type": "string"
+          },
+          "state": {
+           "type": "string"
+          },
+          "source": {
+           "type": "string"
+          },
+          "fileBytes": {
+           "type": "integer"
+          },
+          "options": {
+           "type": "object",
+           "properties": {}
+          },
+          "queuedTime": {
+           "type": "integer"
+          },
+          "updatedTime": {
+           "type": "integer"
+          },
+          "phase": {
+           "type": "string"
+          },
+          "total": {
+           "type": "integer"
+          },
+          "loaded": {
+           "type": "integer"
+          },
+          "shards": {
+           "type": "integer"
+          },
+          "startedTime": {
+           "type": "integer"
+          }
+         }
+        },
+        "example": {
+         "key": "run42-customers",
+         "ref": "20260922T031500Z-k3x9qa",
+         "format": "csv",
+         "state": "running",
+         "phase": "writing",
+         "source": "upload",
+         "fileBytes": 48211000,
+         "total": 100000,
+         "loaded": 41250,
+         "shards": 8,
+         "queuedTime": 1790000000,
+         "startedTime": 1790000000,
+         "updatedTime": 1790000012
+        }
+       }
+      }
+     },
+     "409": {
+      "description": "That ref is already being imported.",
+      "content": {
+       "application/json": {
+        "schema": {
+         "type": "object",
+         "properties": {
+          "error": {
+           "type": "string"
+          },
+          "status": {
+           "type": "integer"
+          },
+          "key": {
+           "type": "string"
+          },
+          "ref": {
+           "type": "string"
+          },
+          "state": {
+           "type": "string"
+          }
+         },
+         "required": [
+          "error",
+          "status"
+         ]
+        },
+        "example": {
+         "error": "This upload is already being imported; poll lists/import/status.",
+         "status": 409,
+         "key": "run42-customers",
+         "ref": "20260922T031500Z-k3x9qa",
+         "state": "running"
+        }
+       }
+      }
+     },
+     "413": {
+      "description": "Body over 4096 KB: use `lists/upload/url`.",
+      "content": {
+       "application/json": {
+        "schema": {
+         "type": "object",
+         "properties": {
+          "error": {
+           "type": "string"
+          },
+          "status": {
+           "type": "integer"
+          },
+          "maxKb": {
+           "type": "integer"
+          }
+         },
+         "required": [
+          "error",
+          "status"
+         ]
+        },
+        "example": {
+         "error": "Body is 5120 KB; the one-call route takes up to 4096 KB. ...",
+         "status": 413,
+         "maxKb": 4096
+        }
+       }
+      }
+     },
+     "422": {
+      "description": "Import failed (state `failed`, `error`). The key was left unchanged.",
+      "content": {
+       "application/json": {
+        "schema": {
+         "type": "object",
+         "required": [
+          "error",
+          "status",
+          "key",
+          "ref",
+          "format",
+          "state",
+          "queuedTime",
+          "phase",
+          "finishedTime",
+          "message"
+         ],
+         "properties": {
+          "error": {
+           "type": "string"
+          },
+          "status": {
+           "type": "integer"
+          },
+          "key": {
+           "type": "string"
+          },
+          "ref": {
+           "type": "string"
+          },
+          "format": {
+           "type": "string"
+          },
+          "state": {
+           "type": "string"
+          },
+          "source": {
+           "type": "string"
+          },
+          "fileBytes": {
+           "type": "integer"
+          },
+          "options": {
+           "type": "object",
+           "properties": {}
+          },
+          "queuedTime": {
+           "type": "integer"
+          },
+          "updatedTime": {
+           "type": "integer"
+          },
+          "startedTime": {
+           "type": "integer"
+          },
+          "phase": {
+           "type": "string"
+          },
+          "finishedTime": {
+           "type": "integer"
+          },
+          "durationMs": {
+           "type": "integer"
+          },
+          "message": {
+           "type": "string"
+          }
+         }
+        },
+        "example": {
+         "error": "Line 7: a quoted field is never closed. Every opening \" needs a closing \", and a \" inside a quoted value must be doubled (\"\").",
+         "status": 422,
+         "key": "run42-customers",
+         "ref": "20260922T031500Z-k3x9qa",
+         "format": "csv",
+         "state": "failed",
+         "phase": "failed",
+         "message": "Nothing was changed: the key still holds whatever it held before this import.",
+         "queuedTime": 1790000000,
+         "finishedTime": 1790000001
+        }
+       }
+      }
+     }
+    }
+   },
+   "post": {
+    "tags": [
+     "lists"
+    ],
+    "operationId": "listsImportPost",
+    "summary": "Replace a key's records with the file in the request body",
+    "description": "LOADING ALWAYS REPLACES: every record under the key is swapped for the file's records and the pop pointer rewound to 1, in one atomic metadata write, so readers see the old set or the new set, never a mix; a failed import changes nothing. The import runs in the background; the call waits up to `wait` seconds and answers 200 `state: done` with the result, 202 `queued`/`running` (poll `lists/import/status`), or 422 `failed`. Each record is returned by pop/random/list with its fields at the top level plus `key`, `index`, `createdTime` (a column or top-level property with one of those names is renamed `key_2` etc. and reported). CSV: the first row is the header; every value is text exactly as written (leading zeros kept); RFC 4180 quoting; comma/semicolon/tab/pipe auto-detected; UTF-8, Windows-1252 or UTF-16 detected; short rows padded (warning); rows with extra non-empty values skipped and reported by line; an unclosed quote fails the import. JSON: an array of objects, JSON Lines, an object wrapping one array ({\"records\": [...]}), or a single object (one record); JSON types kept; non-objects become {\"value\": ...}; integers beyond 2^53 kept exactly as strings. Limits: 4096 KB body, 50 MB via upload/url, 350 KB per record, 1,000,000 records. The file is kept 90 days for reload by ref. POST form: the raw file is the request body (up to 4096 KB).",
+    "parameters": [
+     {
+      "name": "key",
+      "in": "query",
+      "required": true,
+      "description": "Caller-chosen namespace (a test run, team or data set). 1-128 characters: letters, digits and . _ - : @ + =, starting with a letter, digit or +. Case-sensitive.",
+      "schema": {
+       "type": "string"
+      },
+      "example": "run42-customers"
+     },
+     {
+      "name": "format",
+      "in": "query",
+      "required": true,
+      "description": "File format.",
+      "schema": {
+       "type": "string",
+       "enum": [
+        "csv",
+        "json"
+       ]
+      },
+      "example": "csv"
+     },
+     {
+      "name": "wait",
+      "in": "query",
+      "required": false,
+      "description": "Seconds to hold the call open for the result, 0-25 (clamped). Default 25. 0 returns at once with state `queued`. `true`/`false` are accepted as 25/0.",
+      "schema": {
+       "type": "string",
+       "default": "25"
+      },
+      "example": "25"
+     },
+     {
+      "name": "delimiter",
+      "in": "query",
+      "required": false,
+      "description": "CSV only: field delimiter. Leave out to auto-detect from the header row.",
+      "schema": {
+       "type": "string",
+       "enum": [
+        "comma",
+        "semicolon",
+        "tab",
+        "pipe"
+       ]
+      }
+     }
+    ],
+    "responses": {
+     "200": {
+      "description": "OK",
+      "content": {
+       "application/json": {
+        "schema": {
+         "type": "object",
+         "required": [
+          "key",
+          "ref",
+          "format",
+          "state",
+          "fileBytes",
+          "next"
+         ],
+         "properties": {
+          "key": {
+           "type": "string"
+          },
+          "ref": {
+           "type": "string"
+          },
+          "format": {
+           "type": "string"
+          },
+          "state": {
+           "type": "string"
+          },
+          "source": {
+           "type": "string"
+          },
+          "fileBytes": {
+           "type": "integer"
+          },
+          "options": {
+           "type": "object",
+           "properties": {}
+          },
+          "queuedTime": {
+           "type": "integer"
+          },
+          "updatedTime": {
+           "type": "integer"
+          },
+          "startedTime": {
+           "type": "integer"
+          },
+          "phase": {
+           "type": "string"
+          },
+          "total": {
+           "type": "integer"
+          },
+          "loaded": {
+           "type": "integer"
+          },
+          "shards": {
+           "type": "integer"
+          },
+          "finishedTime": {
+           "type": "integer"
+          },
+          "durationMs": {
+           "type": "integer"
+          },
+          "firstIndex": {
+           "type": "integer"
+          },
+          "lastIndex": {
+           "type": "integer"
+          },
+          "skippedCount": {
+           "type": "integer"
+          },
+          "skipped": {
+           "type": "array",
+           "items": {}
+          },
+          "warnings": {
+           "type": "array",
+           "items": {
+            "type": "string"
+           }
+          },
+          "encoding": {
+           "type": "string"
+          },
+          "delimiter": {
+           "type": "string"
+          },
+          "columns": {
+           "type": "array",
+           "items": {
+            "type": "string"
+           }
+          },
+          "blankRows": {
+           "type": "integer"
+          },
+          "replaced": {
+           "type": "object",
+           "required": [
+            "count",
+            "importRef"
+           ],
+           "properties": {
+            "count": {
+             "type": "integer"
+            },
+            "importRef": {
+             "type": "string",
+             "nullable": true
+            }
+           },
+           "nullable": true
+          },
+          "sample": {
+           "$ref": "#/components/schemas/ListRecord"
+          },
+          "next": {
+           "type": "object",
+           "required": [
+            "pop",
+            "random",
+            "reset",
+            "list",
+            "reload"
+           ],
+           "properties": {
+            "pop": {
+             "type": "string"
+            },
+            "random": {
+             "type": "string"
+            },
+            "reset": {
+             "type": "string"
+            },
+            "list": {
+             "type": "string"
+            },
+            "reload": {
+             "type": "string"
+            }
+           }
+          },
+          "shape": {
+           "type": "string"
+          }
+         }
+        },
+        "example": {
+         "key": "run42-customers",
+         "ref": "20260922T031500Z-k3x9qa",
+         "format": "csv",
+         "state": "done",
+         "phase": "done",
+         "source": "body",
+         "fileBytes": 1843,
+         "options": {},
+         "queuedTime": 1790000000,
+         "startedTime": 1790000000,
+         "finishedTime": 1790000001,
+         "updatedTime": 1790000001,
+         "total": 3,
+         "loaded": 3,
+         "shards": 1,
+         "durationMs": 912,
+         "firstIndex": 1,
+         "lastIndex": 3,
+         "skippedCount": 0,
+         "skipped": [],
+         "warnings": [],
+         "encoding": "utf-8",
+         "delimiter": ",",
+         "columns": [
+          "email",
+          "customer_id",
+          "postcode"
+         ],
+         "blankRows": 0,
+         "replaced": {
+          "count": 120,
+          "importRef": null
+         },
+         "sample": {
+          "email": "alice@example.com",
+          "customer_id": "51824753556",
+          "postcode": "0800",
+          "key": "run42-customers",
+          "index": 1,
+          "createdTime": 1790000000
+         },
+         "next": {
+          "pop": "https://api.example.com/v1/lists/pop?key=run42-customers",
+          "random": "https://api.example.com/v1/lists/random?key=run42-customers",
+          "reset": "https://api.example.com/v1/lists/reset?key=run42-customers",
+          "list": "https://api.example.com/v1/lists/list?key=run42-customers&limit=10",
+          "reload": "https://api.example.com/v1/lists/import?key=run42-customers&format=csv&ref=20260922T031500Z-k3x9qa"
+         }
+        }
+       }
+      }
+     },
+     "400": {
+      "$ref": "#/components/responses/Error"
+     },
+     "202": {
+      "description": "Still queued or running after the wait. Poll `lists/import/status` with the returned ref.",
+      "content": {
+       "application/json": {
+        "schema": {
+         "type": "object",
+         "required": [
+          "key",
+          "ref",
+          "format",
+          "state",
+          "source",
+          "fileBytes",
+          "queuedTime",
+          "updatedTime"
+         ],
+         "properties": {
+          "key": {
+           "type": "string"
+          },
+          "ref": {
+           "type": "string"
+          },
+          "format": {
+           "type": "string"
+          },
+          "state": {
+           "type": "string"
+          },
+          "source": {
+           "type": "string"
+          },
+          "fileBytes": {
+           "type": "integer"
+          },
+          "options": {
+           "type": "object",
+           "properties": {}
+          },
+          "queuedTime": {
+           "type": "integer"
+          },
+          "updatedTime": {
+           "type": "integer"
+          },
+          "phase": {
+           "type": "string"
+          },
+          "total": {
+           "type": "integer"
+          },
+          "loaded": {
+           "type": "integer"
+          },
+          "shards": {
+           "type": "integer"
+          },
+          "startedTime": {
+           "type": "integer"
+          }
+         }
+        },
+        "example": {
+         "key": "run42-customers",
+         "ref": "20260922T031500Z-k3x9qa",
+         "format": "csv",
+         "state": "running",
+         "phase": "writing",
+         "source": "upload",
+         "fileBytes": 48211000,
+         "total": 100000,
+         "loaded": 41250,
+         "shards": 8,
+         "queuedTime": 1790000000,
+         "startedTime": 1790000000,
+         "updatedTime": 1790000012
+        }
+       }
+      }
+     },
+     "409": {
+      "description": "That ref is already being imported.",
+      "content": {
+       "application/json": {
+        "schema": {
+         "type": "object",
+         "properties": {
+          "error": {
+           "type": "string"
+          },
+          "status": {
+           "type": "integer"
+          },
+          "key": {
+           "type": "string"
+          },
+          "ref": {
+           "type": "string"
+          },
+          "state": {
+           "type": "string"
+          }
+         },
+         "required": [
+          "error",
+          "status"
+         ]
+        },
+        "example": {
+         "error": "This upload is already being imported; poll lists/import/status.",
+         "status": 409,
+         "key": "run42-customers",
+         "ref": "20260922T031500Z-k3x9qa",
+         "state": "running"
+        }
+       }
+      }
+     },
+     "413": {
+      "description": "Body over 4096 KB: use `lists/upload/url`.",
+      "content": {
+       "application/json": {
+        "schema": {
+         "type": "object",
+         "properties": {
+          "error": {
+           "type": "string"
+          },
+          "status": {
+           "type": "integer"
+          },
+          "maxKb": {
+           "type": "integer"
+          }
+         },
+         "required": [
+          "error",
+          "status"
+         ]
+        },
+        "example": {
+         "error": "Body is 5120 KB; the one-call route takes up to 4096 KB. ...",
+         "status": 413,
+         "maxKb": 4096
+        }
+       }
+      }
+     },
+     "422": {
+      "description": "Import failed (state `failed`, `error`). The key was left unchanged.",
+      "content": {
+       "application/json": {
+        "schema": {
+         "type": "object",
+         "required": [
+          "error",
+          "status",
+          "key",
+          "ref",
+          "format",
+          "state",
+          "queuedTime",
+          "phase",
+          "finishedTime",
+          "message"
+         ],
+         "properties": {
+          "error": {
+           "type": "string"
+          },
+          "status": {
+           "type": "integer"
+          },
+          "key": {
+           "type": "string"
+          },
+          "ref": {
+           "type": "string"
+          },
+          "format": {
+           "type": "string"
+          },
+          "state": {
+           "type": "string"
+          },
+          "source": {
+           "type": "string"
+          },
+          "fileBytes": {
+           "type": "integer"
+          },
+          "options": {
+           "type": "object",
+           "properties": {}
+          },
+          "queuedTime": {
+           "type": "integer"
+          },
+          "updatedTime": {
+           "type": "integer"
+          },
+          "startedTime": {
+           "type": "integer"
+          },
+          "phase": {
+           "type": "string"
+          },
+          "finishedTime": {
+           "type": "integer"
+          },
+          "durationMs": {
+           "type": "integer"
+          },
+          "message": {
+           "type": "string"
+          }
+         }
+        },
+        "example": {
+         "error": "Line 7: a quoted field is never closed. Every opening \" needs a closing \", and a \" inside a quoted value must be doubled (\"\").",
+         "status": 422,
+         "key": "run42-customers",
+         "ref": "20260922T031500Z-k3x9qa",
+         "format": "csv",
+         "state": "failed",
+         "phase": "failed",
+         "message": "Nothing was changed: the key still holds whatever it held before this import.",
+         "queuedTime": 1790000000,
+         "finishedTime": 1790000001
+        }
+       }
+      }
+     }
+    },
+    "requestBody": {
+     "required": true,
+     "description": "The raw CSV or JSON file, up to 4096 KB. Bigger files: `lists/upload/url`.",
+     "content": {
+      "text/csv": {
+       "schema": {
+        "type": "string",
+        "format": "binary"
+       }
+      },
+      "application/json": {
+       "schema": {
+        "type": "string",
+        "format": "binary"
+       }
+      },
+      "application/octet-stream": {
+       "schema": {
+        "type": "string",
+        "format": "binary"
+       }
+      }
+     }
+    }
+   }
+  },
+  "/lists/import/status": {
+   "get": {
+    "tags": [
+     "lists"
+    ],
+    "operationId": "listsImportStatus",
+    "summary": "Progress or result of an import",
+    "description": "`state` is `queued`, `running` (with `loaded` and `total`), `done` (the full result, as `lists/import` returns it), `failed` (HTTP 422 with `error`) or `uploaded` (file in S3, never imported). Without `ref`: the newest upload for the key, plus `recent` - the last 20 uploads, reloadable by ref. An import silent for over 16 minutes is reported as failed.",
+    "parameters": [
+     {
+      "name": "key",
+      "in": "query",
+      "required": true,
+      "description": "Caller-chosen namespace (a test run, team or data set). 1-128 characters: letters, digits and . _ - : @ + =, starting with a letter, digit or +. Case-sensitive.",
+      "schema": {
+       "type": "string"
+      },
+      "example": "run42-customers"
+     },
+     {
+      "name": "ref",
+      "in": "query",
+      "required": false,
+      "description": "Upload reference from `lists/upload/url`, or from an earlier import (files are kept 90 days).",
+      "schema": {
+       "type": "string"
+      },
+      "example": "20260922T031500Z-k3x9qa"
+     }
+    ],
+    "responses": {
+     "200": {
+      "description": "OK",
+      "content": {
+       "application/json": {
+        "schema": {
+         "type": "object",
+         "required": [
+          "key",
+          "ref",
+          "format",
+          "state",
+          "fileBytes",
+          "next"
+         ],
+         "properties": {
+          "key": {
+           "type": "string"
+          },
+          "ref": {
+           "type": "string"
+          },
+          "format": {
+           "type": "string"
+          },
+          "state": {
+           "type": "string"
+          },
+          "source": {
+           "type": "string"
+          },
+          "fileBytes": {
+           "type": "integer"
+          },
+          "options": {
+           "type": "object",
+           "properties": {}
+          },
+          "queuedTime": {
+           "type": "integer"
+          },
+          "updatedTime": {
+           "type": "integer"
+          },
+          "startedTime": {
+           "type": "integer"
+          },
+          "phase": {
+           "type": "string"
+          },
+          "total": {
+           "type": "integer"
+          },
+          "loaded": {
+           "type": "integer"
+          },
+          "shards": {
+           "type": "integer"
+          },
+          "finishedTime": {
+           "type": "integer"
+          },
+          "durationMs": {
+           "type": "integer"
+          },
+          "firstIndex": {
+           "type": "integer"
+          },
+          "lastIndex": {
+           "type": "integer"
+          },
+          "skippedCount": {
+           "type": "integer"
+          },
+          "skipped": {
+           "type": "array",
+           "items": {}
+          },
+          "warnings": {
+           "type": "array",
+           "items": {}
+          },
+          "encoding": {
+           "type": "string"
+          },
+          "delimiter": {
+           "type": "string"
+          },
+          "columns": {
+           "type": "array",
+           "items": {
+            "type": "string"
+           }
+          },
+          "blankRows": {
+           "type": "integer"
+          },
+          "replaced": {
+           "type": "object",
+           "properties": {
+            "count": {
+             "type": "integer"
+            },
+            "importRef": {
+             "type": "string",
+             "nullable": true
+            }
+           },
+           "nullable": true
+          },
+          "sample": {
+           "$ref": "#/components/schemas/ListRecord"
+          },
+          "next": {
+           "anyOf": [
+            {
+             "type": "object",
+             "required": [
+              "pop",
+              "random",
+              "reset",
+              "list",
+              "reload"
+             ],
+             "properties": {
+              "pop": {
+               "type": "string"
+              },
+              "random": {
+               "type": "string"
+              },
+              "reset": {
+               "type": "string"
+              },
+              "list": {
+               "type": "string"
+              },
+              "reload": {
+               "type": "string"
+              }
+             }
+            },
+            {
+             "type": "string"
+            }
+           ]
+          },
+          "recent": {
+           "type": "array",
+           "items": {
+            "type": "object",
+            "required": [
+             "ref",
+             "format",
+             "fileBytes"
+            ],
+            "properties": {
+             "ref": {
+              "type": "string"
+             },
+             "format": {
+              "type": "string"
+             },
+             "fileBytes": {
+              "type": "integer"
+             }
+            }
+           }
+          },
+          "message": {
+           "type": "string"
+          }
+         }
+        },
+        "example": {
+         "key": "run42-customers",
+         "ref": "20260922T031500Z-k3x9qa",
+         "format": "csv",
+         "state": "done",
+         "phase": "done",
+         "source": "body",
+         "fileBytes": 1843,
+         "options": {},
+         "queuedTime": 1790000000,
+         "startedTime": 1790000000,
+         "finishedTime": 1790000001,
+         "updatedTime": 1790000001,
+         "total": 3,
+         "loaded": 3,
+         "shards": 1,
+         "durationMs": 912,
+         "firstIndex": 1,
+         "lastIndex": 3,
+         "skippedCount": 0,
+         "skipped": [],
+         "warnings": [],
+         "encoding": "utf-8",
+         "delimiter": ",",
+         "columns": [
+          "email",
+          "customer_id",
+          "postcode"
+         ],
+         "blankRows": 0,
+         "replaced": {
+          "count": 120,
+          "importRef": null
+         },
+         "sample": {
+          "email": "alice@example.com",
+          "customer_id": "51824753556",
+          "postcode": "0800",
+          "key": "run42-customers",
+          "index": 1,
+          "createdTime": 1790000000
+         },
+         "next": {
+          "pop": "https://api.example.com/v1/lists/pop?key=run42-customers",
+          "random": "https://api.example.com/v1/lists/random?key=run42-customers",
+          "reset": "https://api.example.com/v1/lists/reset?key=run42-customers",
+          "list": "https://api.example.com/v1/lists/list?key=run42-customers&limit=10",
+          "reload": "https://api.example.com/v1/lists/import?key=run42-customers&format=csv&ref=20260922T031500Z-k3x9qa"
+         },
+         "recent": [
+          {
+           "ref": "20260922T031500Z-k3x9qa",
+           "format": "csv",
+           "fileBytes": 1843
+          }
+         ]
+        }
+       }
+      }
+     },
+     "400": {
+      "$ref": "#/components/responses/Error"
+     },
+     "404": {
+      "$ref": "#/components/responses/Error"
+     },
+     "202": {
+      "description": "queued or running",
+      "content": {
+       "application/json": {
+        "schema": {
+         "type": "object",
+         "required": [
+          "key",
+          "ref",
+          "format",
+          "state",
+          "source",
+          "fileBytes",
+          "queuedTime",
+          "updatedTime"
+         ],
+         "properties": {
+          "key": {
+           "type": "string"
+          },
+          "ref": {
+           "type": "string"
+          },
+          "format": {
+           "type": "string"
+          },
+          "state": {
+           "type": "string"
+          },
+          "source": {
+           "type": "string"
+          },
+          "fileBytes": {
+           "type": "integer"
+          },
+          "options": {
+           "type": "object",
+           "properties": {}
+          },
+          "queuedTime": {
+           "type": "integer"
+          },
+          "updatedTime": {
+           "type": "integer"
+          },
+          "phase": {
+           "type": "string"
+          },
+          "total": {
+           "type": "integer"
+          },
+          "loaded": {
+           "type": "integer"
+          },
+          "shards": {
+           "type": "integer"
+          },
+          "startedTime": {
+           "type": "integer"
+          }
+         }
+        },
+        "example": {
+         "key": "run42-customers",
+         "ref": "20260922T031500Z-k3x9qa",
+         "format": "csv",
+         "state": "running",
+         "phase": "writing",
+         "source": "upload",
+         "fileBytes": 48211000,
+         "total": 100000,
+         "loaded": 41250,
+         "shards": 8,
+         "queuedTime": 1790000000,
+         "startedTime": 1790000000,
+         "updatedTime": 1790000012
+        }
+       }
+      }
+     },
+     "422": {
+      "description": "failed",
+      "content": {
+       "application/json": {
+        "schema": {
+         "type": "object",
+         "properties": {
+          "error": {
+           "type": "string"
+          },
+          "status": {
+           "type": "integer"
+          },
+          "key": {
+           "type": "string"
+          },
+          "ref": {
+           "type": "string"
+          },
+          "format": {
+           "type": "string"
+          },
+          "state": {
+           "type": "string"
+          },
+          "phase": {
+           "type": "string"
+          },
+          "message": {
+           "type": "string"
+          },
+          "queuedTime": {
+           "type": "integer"
+          },
+          "finishedTime": {
+           "type": "integer"
+          }
+         },
+         "required": [
+          "error",
+          "status"
+         ]
+        },
+        "example": {
+         "error": "Line 7: a quoted field is never closed. Every opening \" needs a closing \", and a \" inside a quoted value must be doubled (\"\").",
+         "status": 422,
+         "key": "run42-customers",
+         "ref": "20260922T031500Z-k3x9qa",
+         "format": "csv",
+         "state": "failed",
+         "phase": "failed",
+         "message": "Nothing was changed: the key still holds whatever it held before this import.",
+         "queuedTime": 1790000000,
+         "finishedTime": 1790000001
+        }
+       }
+      }
+     }
+    }
+   }
+  }
+ }
+}

@@ -1,0 +1,11 @@
+# DevWeb scenario (OpenText Performance Engineering for Developers / load mode).
+# All times are in seconds. In LoadRunner Professional, Enterprise or Cloud, set
+# the same in the scenario instead.
+vusers: 3
+pacing:
+  type: delay
+  mode: fixed
+  value: 1
+rampUp: 3
+duration: 120
+tearDown: 0

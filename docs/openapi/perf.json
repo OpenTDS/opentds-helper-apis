@@ -1,0 +1,1241 @@
+{
+ "tag": {
+  "name": "perf",
+  "description": "Record performance data points from test scripts and read back exact counts, means and bounds, histogram percentiles (~2% relative accuracy), per-minute time series and pass/fail gates."
+ },
+ "paths": {
+  "/perf/add": {
+   "get": {
+    "tags": [
+     "perf"
+    ],
+    "operationId": "perfAdd",
+    "summary": "Record one or more performance data points",
+    "description": "Folds each value into running accumulators - count, sum, sum of squares, error count, exact min/max and one log-spaced histogram bucket - under a randomly chosen write shard (16 shards, so a busy key does not hit the ~1,000 writes/second limit of one DynamoDB partition). There is no read-modify-write, so concurrent virtual users cannot lose each other's updates. Writes go to both the lifetime aggregate and a one-minute interval bucket, which is what perf/series and windowed perf/stats read.",
+    "parameters": [
+     {
+      "name": "key",
+      "in": "query",
+      "required": true,
+      "schema": {
+       "type": "string",
+       "maxLength": 128
+      },
+      "description": "Series name, e.g. a transaction name. 1-128 characters: letters, digits and . _ - : @ + =, starting with a letter, digit or +. Case-sensitive. (No \"/\" - use \".\" or \":\" to build hierarchical names.)",
+      "example": "Login"
+     },
+     {
+      "name": "value",
+      "in": "query",
+      "required": true,
+      "schema": {
+       "type": "string"
+      },
+      "description": "The measurement: a non-negative number up to 1e12, or a comma-separated list of up to 100 of them to record several points in one call - the cheapest way to record at volume. Values are rounded to 6 decimal places. Negative values are rejected: the histogram is log-spaced, so record a magnitude and carry the sign separately. Units are yours to choose (milliseconds is usual) - be consistent per key.",
+      "example": "248.5"
+     },
+     {
+      "name": "ok",
+      "in": "query",
+      "required": false,
+      "schema": {
+       "type": "boolean",
+       "default": true
+      },
+      "description": "false marks the point(s) as errors, which feeds errors and errorRate. Default true.",
+      "example": false
+     },
+     {
+      "name": "time",
+      "in": "query",
+      "required": false,
+      "schema": {
+       "type": "integer"
+      },
+      "description": "UTC epoch seconds to record the point against, for backfilling a run that has already finished. Default now. Milliseconds are rejected with a 400.",
+      "example": 1785400020
+     },
+     {
+      "name": "raw",
+      "in": "query",
+      "required": false,
+      "schema": {
+       "type": "boolean",
+       "default": false
+      },
+      "description": "Also store each individual point so perf/export can return it. Raw points are kept for 7 days. Off by default - the aggregates answer almost every question.",
+      "example": true
+     }
+    ],
+    "responses": {
+     "200": {
+      "description": "OK",
+      "content": {
+       "application/json": {
+        "schema": {
+         "type": "object",
+         "required": [
+          "key",
+          "recorded",
+          "time",
+          "ok",
+          "raw"
+         ],
+         "properties": {
+          "key": {
+           "type": "string"
+          },
+          "recorded": {
+           "type": "integer"
+          },
+          "time": {
+           "type": "integer"
+          },
+          "ok": {
+           "type": "boolean"
+          },
+          "raw": {
+           "type": "boolean"
+          }
+         }
+        },
+        "example": {
+         "key": "Login",
+         "recorded": 1,
+         "time": 1785400319,
+         "ok": true,
+         "raw": false
+        }
+       }
+      }
+     },
+     "400": {
+      "$ref": "#/components/responses/Error"
+     }
+    }
+   }
+  },
+  "/perf/stats": {
+   "get": {
+    "tags": [
+     "perf"
+    ],
+    "operationId": "perfStats",
+    "summary": "Summary statistics for a key",
+    "description": "count, errors, errorRate, min, max, mean, stdDev, sum, the standard percentiles p50 p75 p90 p95 p99 p99_9, and throughput (points per second between firstTime and lastTime) with durationSeconds. count, mean, standard deviation, minimum and maximum are exact. Percentiles come from the histogram and are accurate to about 2% relative, which is far inside the run-to-run variance of anything worth measuring. Without since/until this is a single BatchGetItem across the shards regardless of how many points the key holds. A key with no data returns count 0 (not a 404).",
+    "parameters": [
+     {
+      "name": "key",
+      "in": "query",
+      "required": true,
+      "schema": {
+       "type": "string",
+       "maxLength": 128
+      },
+      "description": "Series name, e.g. a transaction name. 1-128 characters: letters, digits and . _ - : @ + =, starting with a letter, digit or +. Case-sensitive. (No \"/\" - use \".\" or \":\" to build hierarchical names.)",
+      "example": "Login"
+     },
+     {
+      "name": "p",
+      "in": "query",
+      "required": false,
+      "schema": {
+       "type": "string"
+      },
+      "description": "Extra percentiles to report, comma-separated, each 0-100 (e.g. 99.5,99.99). Returned as p99_5 and p99_99 alongside the standard p50 p75 p90 p95 p99 p99_9.",
+      "example": "99.5"
+     },
+     {
+      "name": "since",
+      "in": "query",
+      "required": false,
+      "schema": {
+       "type": "integer"
+      },
+      "description": "Start of the window, UTC epoch seconds. With since/until, figures are read from one-minute interval buckets (a bucket is included when its minute starts inside the window), which are kept for 7 days after they were written. Without them the lifetime aggregate is used, which never expires and is never truncated.",
+      "example": 1785400020
+     },
+     {
+      "name": "until",
+      "in": "query",
+      "required": false,
+      "schema": {
+       "type": "integer"
+      },
+      "description": "End of the window, UTC epoch seconds (inclusive).",
+      "example": 1785400319
+     }
+    ],
+    "responses": {
+     "200": {
+      "description": "OK",
+      "content": {
+       "application/json": {
+        "schema": {
+         "type": "object",
+         "required": [
+          "key",
+          "source",
+          "count"
+         ],
+         "properties": {
+          "key": {
+           "type": "string"
+          },
+          "source": {
+           "type": "string"
+          },
+          "count": {
+           "type": "integer"
+          },
+          "errors": {
+           "type": "integer"
+          },
+          "errorRate": {
+           "type": "number"
+          },
+          "min": {
+           "type": "number"
+          },
+          "max": {
+           "type": "number"
+          },
+          "mean": {
+           "type": "number"
+          },
+          "stdDev": {
+           "type": "number"
+          },
+          "sum": {
+           "type": "number"
+          },
+          "p50": {
+           "type": "number"
+          },
+          "p75": {
+           "type": "number"
+          },
+          "p90": {
+           "type": "number"
+          },
+          "p95": {
+           "type": "number"
+          },
+          "p99": {
+           "type": "number"
+          },
+          "p99_9": {
+           "type": "number"
+          },
+          "p99_5": {
+           "type": "number"
+          },
+          "p10": {
+           "type": "number"
+          },
+          "firstTime": {
+           "type": "integer"
+          },
+          "lastTime": {
+           "type": "integer"
+          },
+          "durationSeconds": {
+           "type": "integer"
+          },
+          "throughput": {
+           "type": "number",
+           "nullable": true
+          },
+          "comment": {
+           "type": "string"
+          },
+          "since": {
+           "type": "integer"
+          },
+          "until": {
+           "type": "integer"
+          }
+         }
+        },
+        "example": {
+         "key": "Login",
+         "source": "lifetime",
+         "count": 301,
+         "errors": 15,
+         "errorRate": 0.049834,
+         "min": 85.7,
+         "max": 743.4,
+         "mean": 286.4439,
+         "stdDev": 103.721,
+         "sum": 86219.6,
+         "p50": 276.791,
+         "p75": 336.7585,
+         "p90": 409.7182,
+         "p95": 479.3124,
+         "p99": 583.1568,
+         "p99_9": 737.8794,
+         "p99_5": 606.4831,
+         "firstTime": 1785400020,
+         "lastTime": 1785400319,
+         "durationSeconds": 299,
+         "throughput": 1.0067
+        }
+       }
+      }
+     },
+     "400": {
+      "$ref": "#/components/responses/Error"
+     }
+    }
+   }
+  },
+  "/perf/series": {
+   "get": {
+    "tags": [
+     "perf"
+    ],
+    "operationId": "perfSeries",
+    "summary": "Bucketed time series for a key",
+    "description": "Per-interval count, errors, errorRate, min, max, mean, throughput and percentiles, oldest first. This answers the question a run-wide summary hides: did response time degrade as load ramped? Interval buckets are written at one-minute granularity and kept for 7 days. Capped at 500 intervals (the most recent are kept) and 20,000 stored interval items; truncated:true says so.",
+    "parameters": [
+     {
+      "name": "key",
+      "in": "query",
+      "required": true,
+      "schema": {
+       "type": "string",
+       "maxLength": 128
+      },
+      "description": "Series name, e.g. a transaction name. 1-128 characters: letters, digits and . _ - : @ + =, starting with a letter, digit or +. Case-sensitive. (No \"/\" - use \".\" or \":\" to build hierarchical names.)",
+      "example": "Login"
+     },
+     {
+      "name": "interval",
+      "in": "query",
+      "required": false,
+      "schema": {
+       "type": "integer",
+       "default": 60,
+       "minimum": 60,
+       "multipleOf": 60
+      },
+      "description": "Seconds per bucket - any multiple of 60. Default 60.",
+      "example": 60
+     },
+     {
+      "name": "p",
+      "in": "query",
+      "required": false,
+      "schema": {
+       "type": "string"
+      },
+      "description": "Percentiles to report per interval, comma-separated, each 0-100. Default 90.",
+      "example": "90,99"
+     },
+     {
+      "name": "since",
+      "in": "query",
+      "required": false,
+      "schema": {
+       "type": "integer"
+      },
+      "description": "Start of the window, UTC epoch seconds. With since/until, figures are read from one-minute interval buckets (a bucket is included when its minute starts inside the window), which are kept for 7 days after they were written. Without them the lifetime aggregate is used, which never expires and is never truncated.",
+      "example": 1785400020
+     },
+     {
+      "name": "until",
+      "in": "query",
+      "required": false,
+      "schema": {
+       "type": "integer"
+      },
+      "description": "End of the window, UTC epoch seconds (inclusive).",
+      "example": 1785400319
+     }
+    ],
+    "responses": {
+     "200": {
+      "description": "OK",
+      "content": {
+       "application/json": {
+        "schema": {
+         "type": "object",
+         "required": [
+          "key",
+          "intervalSeconds",
+          "buckets",
+          "series"
+         ],
+         "properties": {
+          "key": {
+           "type": "string"
+          },
+          "intervalSeconds": {
+           "type": "integer"
+          },
+          "buckets": {
+           "type": "integer"
+          },
+          "series": {
+           "type": "array",
+           "items": {
+            "type": "object",
+            "required": [
+             "startTime",
+             "count",
+             "errors",
+             "errorRate",
+             "min",
+             "max",
+             "mean",
+             "throughput"
+            ],
+            "properties": {
+             "startTime": {
+              "type": "integer"
+             },
+             "count": {
+              "type": "integer"
+             },
+             "errors": {
+              "type": "integer"
+             },
+             "errorRate": {
+              "type": "number"
+             },
+             "min": {
+              "type": "number"
+             },
+             "max": {
+              "type": "number"
+             },
+             "mean": {
+              "type": "number"
+             },
+             "throughput": {
+              "type": "number"
+             },
+             "p50": {
+              "type": "number"
+             },
+             "p90": {
+              "type": "number"
+             },
+             "p99": {
+              "type": "number"
+             }
+            }
+           }
+          },
+          "comment": {
+           "type": "string"
+          }
+         }
+        },
+        "example": {
+         "key": "Login",
+         "intervalSeconds": 60,
+         "buckets": 3,
+         "series": [
+          {
+           "startTime": 1785400020,
+           "count": 60,
+           "errors": 3,
+           "errorRate": 0.05,
+           "min": 85.7,
+           "max": 577.1,
+           "mean": 252.4483,
+           "throughput": 1.0,
+           "p90": 393.9598,
+           "p99": 577.1
+          },
+          {
+           "startTime": 1785400080,
+           "count": 60,
+           "errors": 3,
+           "errorRate": 0.05,
+           "min": 116.9,
+           "max": 598.2,
+           "mean": 261.87,
+           "throughput": 1.0,
+           "p90": 393.9598,
+           "p99": 598.2
+          },
+          {
+           "startTime": 1785400140,
+           "count": 60,
+           "errors": 3,
+           "errorRate": 0.05,
+           "min": 113.4,
+           "max": 576.7,
+           "mean": 293.6283,
+           "throughput": 1.0,
+           "p90": 426.107,
+           "p99": 576.7
+          }
+         ]
+        }
+       }
+      }
+     },
+     "400": {
+      "$ref": "#/components/responses/Error"
+     }
+    }
+   }
+  },
+  "/perf/assert": {
+   "get": {
+    "tags": [
+     "perf"
+    ],
+    "operationId": "perfAssert",
+    "summary": "Pass/fail performance gate",
+    "description": "Evaluates thresholds against the summary and returns pass plus every check with its actual value, operator and threshold, so a failure says what happened rather than just that it happened. Each check is a query parameter named <statistic><operator>=<number>: statistics are count, errors, errorrate, mean, min, max, stddev, sum, throughput, or any percentile such as p90, p99 or p99.9 (p99_9 also works); operators are lt, le, gt, ge and eq. Several checks may be combined; all must pass. A key with no data fails rather than passes, so a run that never recorded anything cannot pass a gate by accident. Read pass - a 200 does not mean the gate passed unless strict=true was set.",
+    "parameters": [
+     {
+      "name": "key",
+      "in": "query",
+      "required": true,
+      "schema": {
+       "type": "string",
+       "maxLength": 128
+      },
+      "description": "Series name, e.g. a transaction name. 1-128 characters: letters, digits and . _ - : @ + =, starting with a letter, digit or +. Case-sensitive. (No \"/\" - use \".\" or \":\" to build hierarchical names.)",
+      "example": "Login"
+     },
+     {
+      "name": "p90lt",
+      "in": "query",
+      "required": false,
+      "schema": {
+       "type": "number"
+      },
+      "description": "Example check: the 90th percentile must be below this. Any <statistic><operator> pair is accepted the same way - countgt=1000, errorratelt=0.01, meanle=250, p99.9lt=2000.",
+      "example": 800
+     },
+     {
+      "name": "errorratelt",
+      "in": "query",
+      "required": false,
+      "schema": {
+       "type": "number"
+      },
+      "description": "Example check: error rate (0-1) must be below this.",
+      "example": 0.01
+     },
+     {
+      "name": "strict",
+      "in": "query",
+      "required": false,
+      "schema": {
+       "type": "boolean",
+       "default": false
+      },
+      "description": "Return HTTP 412 instead of 200 when a check fails, so a pipeline step can fail on the status code alone. The body is identical either way.",
+      "example": true
+     },
+     {
+      "name": "since",
+      "in": "query",
+      "required": false,
+      "schema": {
+       "type": "integer"
+      },
+      "description": "Start of the window, UTC epoch seconds. With since/until, figures are read from one-minute interval buckets (a bucket is included when its minute starts inside the window), which are kept for 7 days after they were written. Without them the lifetime aggregate is used, which never expires and is never truncated.",
+      "example": 1785400020
+     },
+     {
+      "name": "until",
+      "in": "query",
+      "required": false,
+      "schema": {
+       "type": "integer"
+      },
+      "description": "End of the window, UTC epoch seconds (inclusive).",
+      "example": 1785400319
+     }
+    ],
+    "responses": {
+     "200": {
+      "description": "Checks evaluated - read pass",
+      "content": {
+       "application/json": {
+        "schema": {
+         "type": "object",
+         "required": [
+          "key",
+          "source",
+          "pass",
+          "failed",
+          "checks",
+          "summary"
+         ],
+         "properties": {
+          "key": {
+           "type": "string"
+          },
+          "source": {
+           "type": "string"
+          },
+          "pass": {
+           "type": "boolean"
+          },
+          "failed": {
+           "type": "integer"
+          },
+          "checks": {
+           "type": "array",
+           "items": {
+            "type": "object",
+            "required": [
+             "check",
+             "statistic",
+             "actual",
+             "operator",
+             "threshold",
+             "pass"
+            ],
+            "properties": {
+             "check": {
+              "type": "string"
+             },
+             "statistic": {
+              "type": "string"
+             },
+             "actual": {
+              "type": "number"
+             },
+             "operator": {
+              "type": "string"
+             },
+             "threshold": {
+              "type": "number"
+             },
+             "pass": {
+              "type": "boolean"
+             }
+            }
+           }
+          },
+          "summary": {
+           "type": "object",
+           "required": [
+            "count",
+            "errors",
+            "errorRate",
+            "min",
+            "max",
+            "mean",
+            "stdDev",
+            "sum",
+            "p50",
+            "p75",
+            "p90",
+            "p95",
+            "p99",
+            "p99_9",
+            "firstTime",
+            "lastTime",
+            "durationSeconds",
+            "throughput"
+           ],
+           "properties": {
+            "count": {
+             "type": "integer"
+            },
+            "errors": {
+             "type": "integer"
+            },
+            "errorRate": {
+             "type": "number"
+            },
+            "min": {
+             "type": "number"
+            },
+            "max": {
+             "type": "number"
+            },
+            "mean": {
+             "type": "number"
+            },
+            "stdDev": {
+             "type": "number"
+            },
+            "sum": {
+             "type": "number"
+            },
+            "p50": {
+             "type": "number"
+            },
+            "p75": {
+             "type": "number"
+            },
+            "p90": {
+             "type": "number"
+            },
+            "p95": {
+             "type": "number"
+            },
+            "p99": {
+             "type": "number"
+            },
+            "p99_9": {
+             "type": "number"
+            },
+            "firstTime": {
+             "type": "integer"
+            },
+            "lastTime": {
+             "type": "integer"
+            },
+            "durationSeconds": {
+             "type": "integer"
+            },
+            "throughput": {
+             "type": "number"
+            }
+           }
+          }
+         }
+        },
+        "example": {
+         "key": "Login",
+         "source": "lifetime",
+         "pass": true,
+         "failed": 0,
+         "checks": [
+          {
+           "check": "p90lt",
+           "statistic": "p90",
+           "actual": 409.7182,
+           "operator": "<",
+           "threshold": 800.0,
+           "pass": true
+          },
+          {
+           "check": "errorratelt",
+           "statistic": "errorRate",
+           "actual": 0.049834,
+           "operator": "<",
+           "threshold": 0.1,
+           "pass": true
+          }
+         ],
+         "summary": {
+          "count": 301,
+          "errors": 15,
+          "errorRate": 0.049834,
+          "min": 85.7,
+          "max": 743.4,
+          "mean": 286.4439,
+          "stdDev": 103.721,
+          "sum": 86219.6,
+          "p50": 276.791,
+          "p75": 336.7585,
+          "p90": 409.7182,
+          "p95": 479.3124,
+          "p99": 583.1568,
+          "p99_9": 737.8794,
+          "firstTime": 1785400020,
+          "lastTime": 1785400319,
+          "durationSeconds": 299,
+          "throughput": 1.0067
+         }
+        }
+       }
+      }
+     },
+     "400": {
+      "$ref": "#/components/responses/Error"
+     },
+     "412": {
+      "description": "At least one check failed and strict=true was set (same body as the 200)",
+      "content": {
+       "application/json": {
+        "schema": {
+         "type": "object",
+         "required": [
+          "key",
+          "source",
+          "pass",
+          "failed",
+          "checks",
+          "summary"
+         ],
+         "properties": {
+          "key": {
+           "type": "string"
+          },
+          "source": {
+           "type": "string"
+          },
+          "pass": {
+           "type": "boolean"
+          },
+          "failed": {
+           "type": "integer"
+          },
+          "checks": {
+           "type": "array",
+           "items": {
+            "type": "object",
+            "required": [
+             "check",
+             "pass"
+            ],
+            "properties": {
+             "check": {
+              "type": "string"
+             },
+             "statistic": {
+              "type": "string"
+             },
+             "actual": {
+              "type": "number"
+             },
+             "operator": {
+              "type": "string"
+             },
+             "threshold": {
+              "type": "number"
+             },
+             "pass": {
+              "type": "boolean"
+             },
+             "comment": {
+              "type": "string"
+             }
+            }
+           }
+          },
+          "summary": {
+           "type": "object",
+           "required": [
+            "count"
+           ],
+           "properties": {
+            "count": {
+             "type": "integer"
+            },
+            "errors": {
+             "type": "integer"
+            },
+            "errorRate": {
+             "type": "number"
+            },
+            "min": {
+             "type": "number"
+            },
+            "max": {
+             "type": "number"
+            },
+            "mean": {
+             "type": "number"
+            },
+            "stdDev": {
+             "type": "number"
+            },
+            "sum": {
+             "type": "number"
+            },
+            "p50": {
+             "type": "number"
+            },
+            "p75": {
+             "type": "number"
+            },
+            "p90": {
+             "type": "number"
+            },
+            "p95": {
+             "type": "number"
+            },
+            "p99": {
+             "type": "number"
+            },
+            "p99_9": {
+             "type": "number"
+            },
+            "firstTime": {
+             "type": "integer"
+            },
+            "lastTime": {
+             "type": "integer"
+            },
+            "durationSeconds": {
+             "type": "integer"
+            },
+            "throughput": {
+             "type": "number"
+            },
+            "comment": {
+             "type": "string"
+            }
+           }
+          }
+         }
+        },
+        "example": {
+         "key": "Login",
+         "source": "lifetime",
+         "pass": false,
+         "failed": 2,
+         "checks": [
+          {
+           "check": "p90lt",
+           "statistic": "p90",
+           "actual": 409.7182,
+           "operator": "<",
+           "threshold": 300.0,
+           "pass": false
+          },
+          {
+           "check": "errorratelt",
+           "statistic": "errorRate",
+           "actual": 0.049834,
+           "operator": "<",
+           "threshold": 0.01,
+           "pass": false
+          }
+         ],
+         "summary": {
+          "count": 301,
+          "errors": 15,
+          "errorRate": 0.049834,
+          "min": 85.7,
+          "max": 743.4,
+          "mean": 286.4439,
+          "stdDev": 103.721,
+          "sum": 86219.6,
+          "p50": 276.791,
+          "p75": 336.7585,
+          "p90": 409.7182,
+          "p95": 479.3124,
+          "p99": 583.1568,
+          "p99_9": 737.8794,
+          "firstTime": 1785400020,
+          "lastTime": 1785400319,
+          "durationSeconds": 299,
+          "throughput": 1.0067
+         }
+        }
+       }
+      }
+     }
+    },
+    "x-free-form-query": {
+     "description": "Each check is a parameter named <statistic><operator> with a number value: statistics count, errors, errorrate, mean, min, max, stddev, sum, throughput or any percentile (p90, p99.9, p99_9); operators lt, le, gt, ge, eq. At least one check is required. Parameter names are case-insensitive. Parameters of the other perf actions are ignored rather than rejected.",
+     "patternProperties": {
+      "^(count|errors|errorrate|mean|min|max|stddev|sum|throughput|p[0-9]+([._][0-9]+)?)(lt|le|gt|ge|eq)$": {
+       "type": "number"
+      }
+     }
+    }
+   }
+  },
+  "/perf/keys": {
+   "get": {
+    "tags": [
+     "perf"
+    ],
+    "operationId": "perfKeys",
+    "summary": "List the keys that have recorded results",
+    "description": "Each key with the time it was first and (approximately - refreshed at most once a minute per container) last written. Useful for discovering what a test run actually recorded when the naming convention is not known in advance. Up to 2000 keys; truncated:true when there are more.",
+    "parameters": [
+     {
+      "name": "prefix",
+      "in": "query",
+      "required": false,
+      "schema": {
+       "type": "string"
+      },
+      "description": "Only keys beginning with this string (case-sensitive).",
+      "example": "Login"
+     }
+    ],
+    "responses": {
+     "200": {
+      "description": "OK",
+      "content": {
+       "application/json": {
+        "schema": {
+         "type": "object",
+         "required": [
+          "count",
+          "prefix",
+          "keys"
+         ],
+         "properties": {
+          "count": {
+           "type": "integer"
+          },
+          "prefix": {
+           "type": "string",
+           "nullable": true
+          },
+          "keys": {
+           "type": "array",
+           "items": {
+            "type": "object",
+            "required": [
+             "key",
+             "firstTime",
+             "lastTime"
+            ],
+            "properties": {
+             "key": {
+              "type": "string"
+             },
+             "firstTime": {
+              "type": "integer"
+             },
+             "lastTime": {
+              "type": "integer"
+             }
+            }
+           }
+          }
+         }
+        },
+        "example": {
+         "count": 2,
+         "prefix": null,
+         "keys": [
+          {
+           "key": "Login",
+           "firstTime": 1785400020,
+           "lastTime": 1785400260
+          },
+          {
+           "key": "Search",
+           "firstTime": 1785400020,
+           "lastTime": 1785400020
+          }
+         ]
+        }
+       }
+      }
+     }
+    }
+   }
+  },
+  "/perf/clear": {
+   "get": {
+    "tags": [
+     "perf"
+    ],
+    "operationId": "perfClear",
+    "summary": "Delete everything recorded for a key",
+    "description": "Removes the aggregates, the interval buckets, any raw points and the registry entry. Deletes are capped at about 5000 items per call: while the response has more:true, call it again. Clear a key before a run to start from zero.",
+    "parameters": [
+     {
+      "name": "key",
+      "in": "query",
+      "required": true,
+      "schema": {
+       "type": "string",
+       "maxLength": 128
+      },
+      "description": "Series name, e.g. a transaction name. 1-128 characters: letters, digits and . _ - : @ + =, starting with a letter, digit or +. Case-sensitive. (No \"/\" - use \".\" or \":\" to build hierarchical names.)",
+      "example": "Login"
+     }
+    ],
+    "responses": {
+     "200": {
+      "description": "OK",
+      "content": {
+       "application/json": {
+        "schema": {
+         "type": "object",
+         "required": [
+          "key",
+          "deleted",
+          "more",
+          "comment"
+         ],
+         "properties": {
+          "key": {
+           "type": "string"
+          },
+          "deleted": {
+           "type": "integer"
+          },
+          "more": {
+           "type": "boolean"
+          },
+          "comment": {
+           "type": "string"
+          }
+         }
+        },
+        "example": {
+         "key": "Search",
+         "deleted": 2,
+         "more": false,
+         "comment": "cleared"
+        }
+       }
+      }
+     },
+     "400": {
+      "$ref": "#/components/responses/Error"
+     }
+    }
+   }
+  },
+  "/perf/export": {
+   "get": {
+    "tags": [
+     "perf"
+    ],
+    "operationId": "perfExport",
+    "summary": "Export the individual points for a key",
+    "description": "Returns only points recorded with raw=true, which are kept for 7 days, oldest first. CSV by default (header timestampMs,value,ok; a trailing \"# truncated at limit=N\" line when more exist) or format=json. The aggregates answer almost every question without this; export is for taking the data somewhere else.",
+    "parameters": [
+     {
+      "name": "key",
+      "in": "query",
+      "required": true,
+      "schema": {
+       "type": "string",
+       "maxLength": 128
+      },
+      "description": "Series name, e.g. a transaction name. 1-128 characters: letters, digits and . _ - : @ + =, starting with a letter, digit or +. Case-sensitive. (No \"/\" - use \".\" or \":\" to build hierarchical names.)",
+      "example": "Login"
+     },
+     {
+      "name": "format",
+      "in": "query",
+      "required": false,
+      "schema": {
+       "type": "string",
+       "default": "csv",
+       "enum": [
+        "csv",
+        "json"
+       ]
+      },
+      "description": "csv (default) or json.",
+      "example": "csv"
+     },
+     {
+      "name": "limit",
+      "in": "query",
+      "required": false,
+      "schema": {
+       "type": "integer",
+       "default": 10000,
+       "minimum": 1,
+       "maximum": 50000
+      },
+      "description": "Maximum points to return, 1-50000 (clamped). Default 10000.",
+      "example": 10000
+     },
+     {
+      "name": "since",
+      "in": "query",
+      "required": false,
+      "schema": {
+       "type": "integer"
+      },
+      "description": "Only points at or after this UTC epoch second.",
+      "example": 1785400020
+     },
+     {
+      "name": "until",
+      "in": "query",
+      "required": false,
+      "schema": {
+       "type": "integer"
+      },
+      "description": "Only points at or before this UTC epoch second (inclusive).",
+      "example": 1785400319
+     }
+    ],
+    "responses": {
+     "200": {
+      "description": "text/csv, or application/json when format=json",
+      "content": {
+       "text/csv": {
+        "schema": {
+         "type": "string"
+        },
+        "example": "timestampMs,value,ok\n1785400079000,258.2,false\n1785400079000,294.4,false\n1785400079000,366.8,false\n# truncated at limit=3\n"
+       },
+       "application/json": {
+        "schema": {
+         "type": "object",
+         "required": [
+          "key",
+          "count",
+          "truncated",
+          "points"
+         ],
+         "properties": {
+          "key": {
+           "type": "string"
+          },
+          "count": {
+           "type": "integer"
+          },
+          "truncated": {
+           "type": "boolean"
+          },
+          "points": {
+           "type": "array",
+           "items": {
+            "type": "object",
+            "required": [
+             "timestampMs",
+             "value",
+             "ok"
+            ],
+            "properties": {
+             "timestampMs": {
+              "type": "integer"
+             },
+             "value": {
+              "type": "number"
+             },
+             "ok": {
+              "type": "boolean"
+             }
+            }
+           }
+          }
+         }
+        },
+        "example": {
+         "key": "Login",
+         "count": 3,
+         "truncated": true,
+         "points": [
+          {
+           "timestampMs": 1785400079000,
+           "value": 258.2,
+           "ok": false
+          },
+          {
+           "timestampMs": 1785400079000,
+           "value": 294.4,
+           "ok": false
+          },
+          {
+           "timestampMs": 1785400079000,
+           "value": 366.8,
+           "ok": false
+          }
+         ]
+        }
+       }
+      }
+     },
+     "400": {
+      "$ref": "#/components/responses/Error"
+     }
+    }
+   }
+  }
+ }
+}

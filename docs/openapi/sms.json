@@ -1,0 +1,707 @@
+{
+ "tag": {
+  "name": "sms",
+  "description": "Text messages: real texts caught by registered capture handsets (device-key protected), real sends to those handsets, and simulated texts to any other number."
+ },
+ "paths": {
+  "/sms/receive": {
+   "post": {
+    "tags": [
+     "sms"
+    ],
+    "operationId": "smsReceive",
+    "summary": "Store a text caught by a capture handset (device key required)",
+    "description": "Called by the capture app on a handset each time a text arrives. Requires the X-Device-Key header to match a key configured on the deployment (SmsDeviceKeys); otherwise 401 and nothing is stored. This is what makes the read side trustworthy: a real message can only enter the store from a known, configured device. The JSON body carries the sender, the handset's timestamp and the text; common Android forwarder field names are accepted (sender/from/originatingAddress, body/message/text, time/date/timestamp). The handset's number goes in the query string. Messages are kept 7 days.",
+    "parameters": [
+     {
+      "name": "number",
+      "in": "query",
+      "required": true,
+      "schema": {
+       "type": "string"
+      },
+      "description": "The number of the handset that caught the message. Phone number. Matched on its last nine digits, so 0491570156, 61491570156 and +61491570156 are the same inbox; punctuation is ignored. Send a leading + as %2B.",
+      "example": "%2B61491570156"
+     }
+    ],
+    "responses": {
+     "200": {
+      "description": "OK",
+      "content": {
+       "application/json": {
+        "schema": {
+         "type": "object",
+         "required": [
+          "saved",
+          "number",
+          "mocked",
+          "sender",
+          "receivedTime",
+          "handsetTime",
+          "bytes",
+          "retentionDays"
+         ],
+         "properties": {
+          "saved": {
+           "type": "boolean"
+          },
+          "number": {
+           "type": "string"
+          },
+          "mocked": {
+           "type": "boolean"
+          },
+          "sender": {
+           "type": "string"
+          },
+          "receivedTime": {
+           "type": "integer"
+          },
+          "handsetTime": {
+           "type": "integer"
+          },
+          "bytes": {
+           "type": "integer"
+          },
+          "retentionDays": {
+           "type": "integer"
+          }
+         }
+        },
+        "example": {
+         "saved": true,
+         "number": "491570156",
+         "mocked": false,
+         "sender": "+61411111111",
+         "receivedTime": 1791248523,
+         "handsetTime": 1791248522,
+         "bytes": 33,
+         "retentionDays": 7
+        }
+       }
+      }
+     },
+     "400": {
+      "$ref": "#/components/responses/Error"
+     },
+     "401": {
+      "$ref": "#/components/responses/Error"
+     },
+     "403": {
+      "$ref": "#/components/responses/Error"
+     }
+    },
+    "requestBody": {
+     "required": true,
+     "content": {
+      "application/json": {
+       "schema": {
+        "type": "object",
+        "properties": {
+         "sender": {
+          "type": "string"
+         },
+         "time": {
+          "description": "Handset time: epoch ms, epoch s or ISO 8601"
+         },
+         "body": {
+          "type": "string"
+         }
+        },
+        "required": [
+         "body"
+        ]
+       },
+       "example": {
+        "sender": "+61411111111",
+        "time": 1791248522000,
+        "body": "Your verification code is 482913"
+       }
+      }
+     }
+    },
+    "security": [
+     {
+      "smsDeviceKey": []
+     }
+    ]
+   }
+  },
+  "/sms/get": {
+   "get": {
+    "tags": [
+     "sms"
+    ],
+    "operationId": "smsGet",
+    "summary": "Newest text message for a number",
+    "description": "Returns the newest message for the number with found:true, or found:false (still HTTP 200). With wait (0-20 s) it holds the request open and returns only a message that arrives AFTER the call starts, so a stale code from an earlier run can never satisfy it. since anchors that window earlier: capture the time just before triggering the text. Every message carries mocked:true|false; real=true ignores mocked messages, so a test that needs a genuine delivery cannot be satisfied by a simulation.",
+    "parameters": [
+     {
+      "name": "number",
+      "in": "query",
+      "required": true,
+      "schema": {
+       "type": "string"
+      },
+      "description": "Phone number. Matched on its last nine digits, so 0491570156, 61491570156 and +61491570156 are the same inbox; punctuation is ignored. Send a leading + as %2B.",
+      "example": "0491570156"
+     },
+     {
+      "name": "wait",
+      "in": "query",
+      "required": false,
+      "schema": {
+       "type": "integer",
+       "default": 0,
+       "minimum": 0,
+       "maximum": 20
+      },
+      "description": "Seconds (0-20) to wait for a NEW message. Default 0."
+     },
+     {
+      "name": "since",
+      "in": "query",
+      "required": false,
+      "schema": {
+       "type": "number"
+      },
+      "description": "Only messages received at or after this UTC epoch time (seconds or milliseconds).",
+      "example": 1791248500
+     },
+     {
+      "name": "real",
+      "in": "query",
+      "required": false,
+      "schema": {
+       "type": "boolean",
+       "default": false
+      },
+      "description": "true = ignore mocked messages."
+     }
+    ],
+    "responses": {
+     "200": {
+      "description": "OK",
+      "content": {
+       "application/json": {
+        "schema": {
+         "type": "object",
+         "required": [
+          "number",
+          "found",
+          "body",
+          "waitedMs"
+         ],
+         "properties": {
+          "number": {
+           "type": "string"
+          },
+          "found": {
+           "type": "boolean"
+          },
+          "body": {
+           "type": "string",
+           "nullable": true
+          },
+          "waitedMs": {
+           "type": "integer"
+          },
+          "comment": {
+           "type": "string"
+          },
+          "mocked": {
+           "type": "boolean"
+          },
+          "sender": {
+           "type": "string"
+          },
+          "receivedTime": {
+           "type": "integer"
+          },
+          "ageSeconds": {
+           "type": "integer"
+          },
+          "handsetTime": {
+           "type": "integer",
+           "nullable": true
+          },
+          "handsetTimeRaw": {
+           "type": "string",
+           "nullable": true
+          },
+          "seq": {
+           "type": "string"
+          },
+          "handsetAgeSeconds": {
+           "type": "integer"
+          },
+          "newestAgeSeconds": {
+           "type": "integer"
+          }
+         }
+        },
+        "example": {
+         "found": true,
+         "number": "491570156",
+         "mocked": true,
+         "sender": "TestHelper",
+         "body": "Your verification code is 482913",
+         "receivedTime": 1791248523,
+         "ageSeconds": 2,
+         "handsetTime": null,
+         "handsetTimeRaw": null,
+         "seq": "001791248523412#0377",
+         "waitedMs": 1840
+        }
+       }
+      }
+     },
+     "400": {
+      "$ref": "#/components/responses/Error"
+     }
+    }
+   }
+  },
+  "/sms/list": {
+   "get": {
+    "tags": [
+     "sms"
+    ],
+    "operationId": "smsList",
+    "summary": "Every text message received in the last N seconds",
+    "description": "Sweeps every number at once (or one, with number), newest first, with the list of numbers seen. Useful for finding which handset a message landed on, and for a post-run audit.",
+    "parameters": [
+     {
+      "name": "seconds",
+      "in": "query",
+      "required": false,
+      "schema": {
+       "type": "integer",
+       "default": 300,
+       "minimum": 1,
+       "maximum": 86400
+      },
+      "description": "How far back to look, 1-86400. Default 300."
+     },
+     {
+      "name": "number",
+      "in": "query",
+      "required": false,
+      "schema": {
+       "type": "string"
+      },
+      "description": "Optional: only this number. Phone number. Matched on its last nine digits, so 0491570156, 61491570156 and +61491570156 are the same inbox; punctuation is ignored. Send a leading + as %2B."
+     },
+     {
+      "name": "real",
+      "in": "query",
+      "required": false,
+      "schema": {
+       "type": "boolean",
+       "default": false
+      },
+      "description": "true = leave out mocked messages."
+     }
+    ],
+    "responses": {
+     "200": {
+      "description": "OK",
+      "content": {
+       "application/json": {
+        "schema": {
+         "type": "object",
+         "required": [
+          "seconds",
+          "sinceTime",
+          "untilTime",
+          "count",
+          "numbers",
+          "messages"
+         ],
+         "properties": {
+          "seconds": {
+           "type": "integer"
+          },
+          "sinceTime": {
+           "type": "integer"
+          },
+          "untilTime": {
+           "type": "integer"
+          },
+          "count": {
+           "type": "integer"
+          },
+          "numbers": {
+           "type": "array",
+           "items": {
+            "type": "string"
+           }
+          },
+          "messages": {
+           "type": "array",
+           "items": {
+            "type": "object",
+            "required": [
+             "number",
+             "mocked",
+             "sender",
+             "body",
+             "receivedTime",
+             "ageSeconds",
+             "handsetTime",
+             "handsetTimeRaw",
+             "seq"
+            ],
+            "properties": {
+             "number": {
+              "type": "string"
+             },
+             "mocked": {
+              "type": "boolean"
+             },
+             "sender": {
+              "type": "string"
+             },
+             "body": {
+              "type": "string"
+             },
+             "receivedTime": {
+              "type": "integer"
+             },
+             "ageSeconds": {
+              "type": "integer"
+             },
+             "handsetTime": {
+              "type": "integer",
+              "nullable": true
+             },
+             "handsetTimeRaw": {
+              "type": "string",
+              "nullable": true
+             },
+             "seq": {
+              "type": "string"
+             },
+             "handsetAgeSeconds": {
+              "type": "integer"
+             }
+            }
+           }
+          },
+          "number": {
+           "type": "string"
+          }
+         }
+        },
+        "example": {
+         "seconds": 300,
+         "sinceTime": 1791248223,
+         "untilTime": 1791248523,
+         "count": 1,
+         "numbers": [
+          "491570156"
+         ],
+         "messages": [
+          {
+           "number": "491570156",
+           "mocked": true,
+           "sender": "TestHelper",
+           "body": "Your verification code is 482913",
+           "receivedTime": 1791248523,
+           "ageSeconds": 2,
+           "handsetTime": null,
+           "handsetTimeRaw": null,
+           "seq": "001791248523412#0377"
+          }
+         ]
+        }
+       }
+      }
+     },
+     "400": {
+      "$ref": "#/components/responses/Error"
+     }
+    }
+   }
+  },
+  "/sms/send": {
+   "get": {
+    "tags": [
+     "sms"
+    ],
+    "operationId": "smsSend",
+    "summary": "Send a REAL text to a registered handset",
+    "description": "Publishes a real SMS, but only to the handsets registered on this deployment (SmsSendAllowedNumbers). Anyone may call it; any other number gets 403 with no text sent, a hint, and mockUrl - the equivalent sms/mocksend call. Real sends to one handset are limited to one per SmsSendIntervalSeconds (default 10): too soon is 429 with retryAfterSeconds. The response carries the code and a ready getUrl (wait=20, since=now, real=true) to read it back once the capture app has posted it.",
+    "parameters": [
+     {
+      "name": "number",
+      "in": "query",
+      "required": true,
+      "schema": {
+       "type": "string"
+      },
+      "description": "Phone number. Matched on its last nine digits, so 0491570156, 61491570156 and +61491570156 are the same inbox; punctuation is ignored. Send a leading + as %2B.",
+      "example": "%2B61400000001"
+     },
+     {
+      "name": "code",
+      "in": "query",
+      "required": false,
+      "schema": {
+       "type": "string"
+      },
+      "description": "Code to send: 1-12 letters or digits. Generated (6 digits) when omitted; always returned in the response so the test can assert the right message arrived.",
+      "example": "482913"
+     },
+     {
+      "name": "body",
+      "in": "query",
+      "required": false,
+      "schema": {
+       "type": "string"
+      },
+      "description": "Message template; {code} is replaced with the code. Default 'Your verification code is {code}'. Max 480 characters (about three billed SMS segments).",
+      "example": "Your verification code is {code}"
+     }
+    ],
+    "responses": {
+     "200": {
+      "description": "OK",
+      "content": {
+       "application/json": {
+        "schema": {
+         "type": "object",
+         "required": [
+          "sent",
+          "mocked",
+          "number",
+          "to",
+          "code",
+          "codeInBody",
+          "body",
+          "messageId",
+          "sentTime",
+          "getUrl"
+         ],
+         "properties": {
+          "sent": {
+           "type": "boolean"
+          },
+          "mocked": {
+           "type": "boolean"
+          },
+          "number": {
+           "type": "string"
+          },
+          "to": {
+           "type": "string"
+          },
+          "code": {
+           "type": "string"
+          },
+          "codeInBody": {
+           "type": "boolean"
+          },
+          "body": {
+           "type": "string"
+          },
+          "messageId": {
+           "type": "string"
+          },
+          "sentTime": {
+           "type": "integer"
+          },
+          "getUrl": {
+           "type": "string"
+          }
+         }
+        },
+        "example": {
+         "sent": true,
+         "mocked": false,
+         "number": "400000001",
+         "to": "+61400000001",
+         "code": "482913",
+         "codeInBody": true,
+         "body": "Your verification code is 482913",
+         "messageId": "5f2c1e7a-...",
+         "sentTime": 1791248523,
+         "getUrl": "https://api.example.com/v1/sms/get?number=400000001&wait=20&since=1791248523&real=true"
+        }
+       }
+      }
+     },
+     "400": {
+      "$ref": "#/components/responses/Error"
+     },
+     "403": {
+      "$ref": "#/components/responses/Error"
+     },
+     "429": {
+      "$ref": "#/components/responses/Error"
+     },
+     "502": {
+      "description": "Amazon SNS refused the message (for example an unreachable number or a spending limit). Nothing was sent.",
+      "content": {
+       "application/json": {
+        "schema": {
+         "allOf": [
+          {
+           "$ref": "#/components/schemas/Error"
+          },
+          {
+           "type": "object",
+           "properties": {
+            "detail": {
+             "type": "string"
+            },
+            "number": {
+             "type": "string"
+            }
+           }
+          }
+         ]
+        },
+        "example": {
+         "error": "SNS would not accept the message.",
+         "status": 502,
+         "detail": "InvalidParameter: ...",
+         "number": "400000001"
+        }
+       }
+      }
+     }
+    }
+   }
+  },
+  "/sms/mocksend": {
+   "get": {
+    "tags": [
+     "sms"
+    ],
+    "operationId": "smsMocksend",
+    "summary": "Simulate a text message to any unregistered number",
+    "description": "Stores a simulated message for the number exactly as if a capture handset had posted it, so sms/get and sms/list return it - with mocked:true. No SMS is sent and nothing is charged. Refused (403) for registered and capture handsets, so a real handset's inbox only ever holds real texts. Use a fictitious or random number; the response's code is what to assert, since other testers may share a well-known fictitious number. Limited to one per second per number; mocks are kept 1 day.",
+    "parameters": [
+     {
+      "name": "number",
+      "in": "query",
+      "required": true,
+      "schema": {
+       "type": "string"
+      },
+      "description": "Phone number. Matched on its last nine digits, so 0491570156, 61491570156 and +61491570156 are the same inbox; punctuation is ignored. Send a leading + as %2B.",
+      "example": "0491570156"
+     },
+     {
+      "name": "code",
+      "in": "query",
+      "required": false,
+      "schema": {
+       "type": "string"
+      },
+      "description": "Code to send: 1-12 letters or digits. Generated (6 digits) when omitted; always returned in the response so the test can assert the right message arrived.",
+      "example": "482913"
+     },
+     {
+      "name": "body",
+      "in": "query",
+      "required": false,
+      "schema": {
+       "type": "string"
+      },
+      "description": "Message template; {code} is replaced with the code. Default 'Your verification code is {code}'. Max 480 characters (about three billed SMS segments).",
+      "example": "Your verification code is {code}"
+     },
+     {
+      "name": "from",
+      "in": "query",
+      "required": false,
+      "schema": {
+       "type": "string"
+      },
+      "description": "Sender shown on the simulated message. Default 'TestHelper'.",
+      "example": "MyBank"
+     }
+    ],
+    "responses": {
+     "200": {
+      "description": "OK",
+      "content": {
+       "application/json": {
+        "schema": {
+         "type": "object",
+         "required": [
+          "sent",
+          "mocked",
+          "number",
+          "code",
+          "codeInBody",
+          "body",
+          "sender",
+          "sentTime",
+          "retentionDays",
+          "getUrl"
+         ],
+         "properties": {
+          "sent": {
+           "type": "boolean"
+          },
+          "mocked": {
+           "type": "boolean"
+          },
+          "number": {
+           "type": "string"
+          },
+          "code": {
+           "type": "string"
+          },
+          "codeInBody": {
+           "type": "boolean"
+          },
+          "body": {
+           "type": "string"
+          },
+          "sender": {
+           "type": "string"
+          },
+          "sentTime": {
+           "type": "integer"
+          },
+          "retentionDays": {
+           "type": "integer"
+          },
+          "getUrl": {
+           "type": "string"
+          }
+         }
+        },
+        "example": {
+         "sent": true,
+         "mocked": true,
+         "number": "491570156",
+         "code": "482913",
+         "codeInBody": true,
+         "body": "Your verification code is 482913",
+         "sender": "TestHelper",
+         "sentTime": 1791248523,
+         "retentionDays": 1,
+         "getUrl": "https://api.example.com/v1/sms/get?number=491570156&since=1791248522"
+        }
+       }
+      }
+     },
+     "400": {
+      "$ref": "#/components/responses/Error"
+     },
+     "403": {
+      "$ref": "#/components/responses/Error"
+     },
+     "429": {
+      "$ref": "#/components/responses/Error"
+     }
+    }
+   }
+  }
+ }
+}

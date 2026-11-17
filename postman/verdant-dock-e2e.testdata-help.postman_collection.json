@@ -1,0 +1,2547 @@
+{
+	"info": {
+		"_postman_id": "5d2f7a1e-8c3b-4d0e-9a51-7b6e0c2f4a18",
+		"name": "Verdant Dock - E2E happy path (signup to email-to-case) - testdata.help",
+		"description": "End-to-end happy path for the Verdant Dock demo store (https://shop.verdant-v1.testthis.now), driven through its JSON API with the Test Helper API v1 at https://api.testdata.help/v1 (guide: https://api.testdata.help/v1/llms.txt).\n\n00 Staff login - Sally signs in (password + TOTP from totp/get?key=automation) so this run's source IP joins her IP history\n0 Setup - run id (lists/codes), unique vd.<rand8>@testdata.help customer, AU name (names/get), random 4-digit gate code, random METRO Melbourne address\n1 Sign up - signup, verification code caught with mail/pop?wait=20, verify, TOTP enrol, secret stored with totp/set, activate with totp/get\n2 Sign in - password + TOTP (replay-safe code choice)\n3 Order - address, cart (1 x {{sku}}), quote, first available delivery window, order with mock test card, invoice email\n3b Chat - ask the assistant each of chatQuestions, end the chat, check the CLOSED CHAT case under Help and the transcript email\n4 Email-to-case - mail/send from the customer's address to the support address with the gate code, wait for the [C-yymmdd-XXXXX] case email, confirm the case and code via /v1/cases\n5 Staff view - Sally can see the new customer, order and case\n6 Bank the account under VD_USERPOOL, register the order under VD_CLEANUP, logout\n\nRun: newman run verdant-dock-e2e.testdata-help.postman_collection.json\nPREREQUISITES for folder 4: (a) the testdata.help stack must allow the support address - deploy with -EmailSendAllowedDomains \"testthis.now\" (or -EmailSendAllowedTo \"support-v1@testthis.now\"), otherwise mail/send returns 403; (b) SES in us-west-1 must have production access, because the sandbox only delivers to verified identities.\nThe Verdant Dock app must also be able to send to @testdata.help addresses (folders 1, 3, 3b and 4 catch its emails there).",
+		"schema": "https://schema.getpostman.com/json/collection/v2.1.0/collection.json"
+	},
+	"auth": {
+		"type": "bearer",
+		"bearer": [
+			{
+				"key": "token",
+				"value": "{{accessToken}}",
+				"type": "string"
+			}
+		]
+	},
+	"event": [
+		{
+			"listen": "test",
+			"script": {
+				"type": "text/javascript",
+				"exec": [
+					"// Log RFC 7807 problems from the Verdant Dock API so failures are self-explaining in newman output.",
+					"const ct = (pm.response.headers.get('Content-Type') || '');",
+					"if (ct.includes('problem+json')) {",
+					"    try { const p = pm.response.json(); console.log(`PROBLEM ${p.status} ${p.code}: ${p.detail || p.title} (correlationId ${p.correlationId || '-'})`, p.errors || ''); } catch (e) {}",
+					"}"
+				]
+			}
+		}
+	],
+	"item": [
+		{
+			"name": "00 Staff login (Sally)",
+			"item": [
+				{
+					"name": "TD - Save staff TOTP secret",
+					"request": {
+						"method": "GET",
+						"header": [],
+						"url": "{{tdBase}}/totp/set?key={{staffTotpKey}}&user={{staffEmail}}&secret={{staffTotpSecretCompact}}",
+						"auth": {
+							"type": "noauth"
+						}
+					},
+					"event": [
+						{
+							"listen": "prerequest",
+							"script": {
+								"type": "text/javascript",
+								"exec": [
+									"// The secret is kept as shown by the authenticator (groups of 4); the helper wants plain base32",
+									"pm.collectionVariables.set('staffTotpSecretCompact', (pm.variables.get('staffTotpSecret') || '').replace(/\\s+/g, '').toUpperCase());",
+									"pm.collectionVariables.set('staffMfaTries', '0');",
+									"pm.collectionVariables.set('staffPreferNext', '');"
+								]
+							}
+						},
+						{
+							"listen": "test",
+							"script": {
+								"type": "text/javascript",
+								"exec": [
+									"pm.test('Staff TOTP secret stored', () => {",
+									"    pm.response.to.have.status(200);",
+									"    pm.expect(pm.response.json().saved).to.eql(true);",
+									"});"
+								]
+							}
+						}
+					]
+				},
+				{
+					"name": "VD - Staff login (password)",
+					"request": {
+						"method": "POST",
+						"header": [
+							{
+								"key": "X-Test-Partition",
+								"value": "{{partition}}"
+							},
+							{
+								"key": "X-Correlation-Id",
+								"value": "{{runId}}-{{$randomUUID}}"
+							},
+							{
+								"key": "Content-Type",
+								"value": "application/json"
+							}
+						],
+						"url": "{{vdBase}}/v1/staff/login",
+						"body": {
+							"mode": "raw",
+							"raw": "{\n  \"email\": \"{{staffEmail}}\",\n  \"password\": \"{{staffPassword}}\"\n}",
+							"options": {
+								"raw": {
+									"language": "json"
+								}
+							}
+						},
+						"auth": {
+							"type": "noauth"
+						}
+					},
+					"event": [
+						{
+							"listen": "test",
+							"script": {
+								"type": "text/javascript",
+								"exec": [
+									"const j = pm.response.json();",
+									"pm.test('200 MFA_REQUIRED', () => {",
+									"    pm.response.to.have.status(200);",
+									"    pm.expect(j.status).to.eql('MFA_REQUIRED');",
+									"    pm.expect(j.mfaToken).to.be.a('string').and.not.empty;",
+									"});",
+									"pm.collectionVariables.set('staffMfaToken', j.mfaToken);"
+								]
+							}
+						}
+					]
+				},
+				{
+					"name": "TD - Get staff TOTP code",
+					"request": {
+						"method": "GET",
+						"header": [],
+						"url": "{{tdBase}}/totp/get?key={{staffTotpKey}}&user={{staffEmail}}",
+						"auth": {
+							"type": "noauth"
+						}
+					},
+					"event": [
+						{
+							"listen": "test",
+							"script": {
+								"type": "text/javascript",
+								"exec": [
+									"const j = pm.response.json();",
+									"pm.test('Staff TOTP code generated', () => {",
+									"    pm.response.to.have.status(200);",
+									"    pm.expect(j.code).to.match(/^\\d{6}$/);",
+									"});",
+									"// Sally's code may already have been used this 30 s step (a browser sign-in, or a previous run) and",
+									"// codes are single-use per step. Take nextCode when a retry asked for it, or when the step is about to roll.",
+									"const preferNext = pm.collectionVariables.get('staffPreferNext') === 'true';",
+									"pm.collectionVariables.set('staffTotpCode', (preferNext || j.secondsRemaining < 3) ? j.nextCode : j.code);"
+								]
+							}
+						}
+					]
+				},
+				{
+					"name": "VD - Staff login (TOTP)",
+					"request": {
+						"method": "POST",
+						"header": [
+							{
+								"key": "X-Test-Partition",
+								"value": "{{partition}}"
+							},
+							{
+								"key": "X-Correlation-Id",
+								"value": "{{runId}}-{{$randomUUID}}"
+							},
+							{
+								"key": "Content-Type",
+								"value": "application/json"
+							}
+						],
+						"url": "{{vdBase}}/v1/staff/login/mfa",
+						"body": {
+							"mode": "raw",
+							"raw": "{\n  \"mfaToken\": \"{{staffMfaToken}}\",\n  \"code\": \"{{staffTotpCode}}\"\n}",
+							"options": {
+								"raw": {
+									"language": "json"
+								}
+							}
+						},
+						"auth": {
+							"type": "noauth"
+						}
+					},
+					"event": [
+						{
+							"listen": "test",
+							"script": {
+								"type": "text/javascript",
+								"exec": [
+									"const next = (n) => (pm.execution && pm.execution.setNextRequest) ? pm.execution.setNextRequest(n) : postman.setNextRequest(n);",
+									"const tries = Number(pm.collectionVariables.get('staffMfaTries') || 0) + 1;",
+									"pm.collectionVariables.set('staffMfaTries', String(tries));",
+									"if (pm.response.code === 401 && tries < 2) {",
+									"    // Most likely a replayed code - retry once with the next step's code (accepted for clock drift)",
+									"    console.log('Staff TOTP rejected, retrying with nextCode', pm.response.text());",
+									"    pm.collectionVariables.set('staffPreferNext', 'true');",
+									"    next('TD - Get staff TOTP code');",
+									"    } else {",
+									"const j = pm.response.json();",
+									"pm.test('Staff signed in with access and refresh tokens', () => {",
+									"    pm.response.to.have.status(200);",
+									"    pm.expect(j.accessToken).to.be.a('string').and.not.empty;",
+									"    pm.expect(j.refreshToken).to.be.a('string').and.not.empty;",
+									"});",
+									"pm.collectionVariables.set('staffAccessToken', j.accessToken);",
+									"pm.collectionVariables.set('staffRefreshToken', j.refreshToken);",
+									"}"
+								]
+							}
+						}
+					]
+				},
+				{
+					"name": "VD - Staff me (IP history)",
+					"request": {
+						"method": "GET",
+						"header": [
+							{
+								"key": "X-Test-Partition",
+								"value": "{{partition}}"
+							},
+							{
+								"key": "X-Correlation-Id",
+								"value": "{{runId}}-{{$randomUUID}}"
+							},
+							{
+								"key": "Authorization",
+								"value": "Bearer {{staffAccessToken}}"
+							}
+						],
+						"url": "{{vdBase}}/v1/staff/me",
+						"auth": {
+							"type": "noauth"
+						}
+					},
+					"event": [
+						{
+							"listen": "test",
+							"script": {
+								"type": "text/javascript",
+								"exec": [
+									"const j = pm.response.json();",
+									"const text = JSON.stringify(j);",
+									"pm.test('Signed in as the staff user', () => {",
+									"    pm.response.to.have.status(200);",
+									"    pm.expect(text.toLowerCase()).to.include(pm.variables.get('staffEmail').toLowerCase());",
+									"});",
+									"// Log what the store has recorded, so you can see which networks this run's customers must share",
+									"console.log('Staff networks / IP history:', JSON.stringify(j.networks || j.ipHistory || j, null, 1).slice(0, 1500));"
+								]
+							}
+						}
+					]
+				}
+			],
+			"description": "Signs in as the staff user first, so this run's source IP is added to the staff account's IP history and the customers created below are in the staff view."
+		},
+		{
+			"name": "0 Setup",
+			"item": [
+				{
+					"name": "TD - New run id",
+					"request": {
+						"method": "GET",
+						"header": [],
+						"url": "{{tdBase}}/lists/codes",
+						"auth": {
+							"type": "noauth"
+						}
+					},
+					"event": [
+						{
+							"listen": "test",
+							"script": {
+								"type": "text/javascript",
+								"exec": [
+									"pm.test('200 with random codes', () => {",
+									"    pm.response.to.have.status(200);",
+									"    const j = pm.response.json();",
+									"    pm.expect(j.rand10).to.match(/^[A-Z0-9]{10}$/);",
+									"    pm.expect(j.rand8).to.match(/^[A-Z0-9]{8}$/);",
+									"});",
+									"const j = pm.response.json();",
+									"const runId = j.rand10;",
+									"pm.collectionVariables.set('runId', runId);",
+									"pm.collectionVariables.set('totpKey', 'VD_' + runId);",
+									"",
+									"// New customer at the helper's mail domain (mail/pop catches everything sent to it)",
+									"const email = (pm.variables.get('emailPrefix') || 'vd') + '.' + j.rand8.toLowerCase() + '@' + (pm.variables.get('mailDomain') || 'testdata.help');",
+									"pm.collectionVariables.set('email', email);",
+									"",
+									"// 12-128 chars, upper + lower + digit + symbol",
+									"pm.collectionVariables.set('password', 'Vd!' + runId + 'a1x');",
+									"",
+									"// Random 4-digit front-gate security code (leading zeros allowed)",
+									"pm.collectionVariables.set('gateCode', String(Math.floor(Math.random() * 10000)).padStart(4, '0'));",
+									"",
+									"// Delivery address: a random METRO locality near Melbourne (all verified serviceable)",
+									"const addresses = [",
+									"    { line1: '12 Fern Street',    suburb: 'Glen Waverley', postcode: '3150' },",
+									"    { line1: '27 Station Street', suburb: 'Box Hill',      postcode: '3128' },",
+									"    { line1: '8 Acland Street',   suburb: 'St Kilda',      postcode: '3182' },",
+									"    { line1: '45 High Street',    suburb: 'Kew',           postcode: '3101' },",
+									"    { line1: '19 Albion Street',  suburb: 'Brunswick',     postcode: '3056' }",
+									"];",
+									"const a = addresses[Math.floor(Math.random() * addresses.length)];",
+									"pm.collectionVariables.set('addrLine1', a.line1);",
+									"pm.collectionVariables.set('addrSuburb', a.suburb);",
+									"pm.collectionVariables.set('addrPostcode', a.postcode);",
+									"pm.collectionVariables.set('lastTotpUsed', '');",
+									"console.log(`Run ${runId}: ${email}, ${a.line1}, ${a.suburb} VIC ${a.postcode}, gate code ${pm.collectionVariables.get('gateCode')}`);"
+								]
+							}
+						}
+					]
+				},
+				{
+					"name": "TD - Customer name",
+					"request": {
+						"method": "GET",
+						"header": [],
+						"url": "{{tdBase}}/names/get?region=AU&seed={{runId}}",
+						"auth": {
+							"type": "noauth"
+						}
+					},
+					"event": [
+						{
+							"listen": "test",
+							"script": {
+								"type": "text/javascript",
+								"exec": [
+									"pm.test('200 with an AU persona', () => {",
+									"    pm.response.to.have.status(200);",
+									"    pm.expect(pm.response.json().region).to.eql('AU');",
+									"});",
+									"const j = pm.response.json();",
+									"// ASCII-folded form keeps later subject/body assertions simple",
+									"pm.collectionVariables.set('givenName', j.ascii.femaleFirstName);",
+									"pm.collectionVariables.set('familyName', j.ascii.femaleLastName);"
+								]
+							}
+						}
+					]
+				},
+				{
+					"name": "TD - Clear inbox",
+					"request": {
+						"method": "GET",
+						"header": [],
+						"url": "{{tdBase}}/mail/clear?address={{email}}",
+						"auth": {
+							"type": "noauth"
+						}
+					},
+					"event": [
+						{
+							"listen": "test",
+							"script": {
+								"type": "text/javascript",
+								"exec": [
+									"pm.test('Inbox cleared', () => pm.response.to.have.status(200));"
+								]
+							}
+						}
+					]
+				},
+				{
+					"name": "VD - Health",
+					"request": {
+						"method": "GET",
+						"header": [
+							{
+								"key": "X-Test-Partition",
+								"value": "{{partition}}"
+							},
+							{
+								"key": "X-Correlation-Id",
+								"value": "{{runId}}-{{$randomUUID}}"
+							}
+						],
+						"url": "{{vdBase}}/v1/health",
+						"auth": {
+							"type": "noauth"
+						}
+					},
+					"event": [
+						{
+							"listen": "test",
+							"script": {
+								"type": "text/javascript",
+								"exec": [
+									"pm.test('API is up', () => pm.response.to.have.status(200));"
+								]
+							}
+						}
+					]
+				},
+				{
+					"name": "VD - Delivery area check",
+					"request": {
+						"method": "GET",
+						"header": [
+							{
+								"key": "X-Test-Partition",
+								"value": "{{partition}}"
+							},
+							{
+								"key": "X-Correlation-Id",
+								"value": "{{runId}}-{{$randomUUID}}"
+							}
+						],
+						"url": "{{vdBase}}/v1/delivery/check?suburb={{addrSuburb}}&state=VIC&postcode={{addrPostcode}}",
+						"auth": {
+							"type": "noauth"
+						}
+					},
+					"event": [
+						{
+							"listen": "test",
+							"script": {
+								"type": "text/javascript",
+								"exec": [
+									"const j = pm.response.json();",
+									"pm.test('Address is serviceable, metro Melbourne', () => {",
+									"    pm.response.to.have.status(200);",
+									"    pm.expect(j.serviceable).to.be.true;",
+									"    pm.expect(j.zone).to.eql('METRO');",
+									"    pm.expect(j.distanceFromMelbourneKm).to.be.below(50);",
+									"});"
+								]
+							}
+						}
+					]
+				}
+			],
+			"description": "Run data from the testdata.help helpers: run id, unique @testdata.help address, AU name, random gate code, near-Melbourne address."
+		},
+		{
+			"name": "1 Sign up, verify email, enrol MFA",
+			"item": [
+				{
+					"name": "VD - Sign up",
+					"request": {
+						"method": "POST",
+						"header": [
+							{
+								"key": "X-Test-Partition",
+								"value": "{{partition}}"
+							},
+							{
+								"key": "X-Correlation-Id",
+								"value": "{{runId}}-{{$randomUUID}}"
+							},
+							{
+								"key": "Content-Type",
+								"value": "application/json"
+							}
+						],
+						"url": "{{vdBase}}/v1/auth/signup",
+						"body": {
+							"mode": "raw",
+							"raw": "{\n  \"email\": \"{{email}}\",\n  \"password\": \"{{password}}\",\n  \"givenName\": \"{{givenName}}\",\n  \"familyName\": \"{{familyName}}\",\n  \"mobile\": \"{{mobile}}\",\n  \"acceptTerms\": true,\n  \"marketingOptIn\": false\n}",
+							"options": {
+								"raw": {
+									"language": "json"
+								}
+							}
+						},
+						"auth": {
+							"type": "noauth"
+						}
+					},
+					"event": [
+						{
+							"listen": "test",
+							"script": {
+								"type": "text/javascript",
+								"exec": [
+									"pm.test('202 VERIFICATION_SENT', () => {",
+									"    pm.response.to.have.status(202);",
+									"    const j = pm.response.json();",
+									"    pm.expect(j.status).to.eql('VERIFICATION_SENT');",
+									"    pm.expect(j.email).to.eql(pm.collectionVariables.get('email'));",
+									"});",
+									"pm.collectionVariables.set('popTries', '0');"
+								]
+							}
+						}
+					]
+				},
+				{
+					"name": "TD - Pop verification email",
+					"request": {
+						"method": "GET",
+						"header": [],
+						"url": "{{tdBase}}/mail/pop?address={{email}}&wait=20&grace=0",
+						"auth": {
+							"type": "noauth"
+						}
+					},
+					"event": [
+						{
+							"listen": "test",
+							"script": {
+								"type": "text/javascript",
+								"exec": [
+									"const next = (n) => (pm.execution && pm.execution.setNextRequest) ? pm.execution.setNextRequest(n) : postman.setNextRequest(n);",
+									"const j = pm.response.json();",
+									"const subject = j.subject || '';",
+									"const tries = Number(pm.collectionVariables.get('popTries') || 0) + 1;",
+									"pm.collectionVariables.set('popTries', String(tries));",
+									"if (!/verify your email/i.test(subject) && tries < 4) {",
+									"    console.log(`Not the verification email yet (${subject || 'no mail'}) - retry ${tries}`);",
+									"    next(pm.info.requestName);",
+									"    return;",
+									"}",
+									"pm.test('Verification email received with a 6-digit code', () => {",
+									"    pm.expect(subject).to.match(/verify your email/i);",
+									"    pm.expect(j.from).to.include('verdant');",
+									"    const m = (subject.match(/\\b(\\d{6})\\b/) || (j.body || '').match(/Code:\\s*(\\d{6})/));",
+									"    pm.expect(m, 'code in subject or body').to.not.be.null;",
+									"    pm.collectionVariables.set('verifyCode', m[1]);",
+									"});"
+								]
+							}
+						}
+					]
+				},
+				{
+					"name": "VD - Verify email",
+					"request": {
+						"method": "POST",
+						"header": [
+							{
+								"key": "X-Test-Partition",
+								"value": "{{partition}}"
+							},
+							{
+								"key": "X-Correlation-Id",
+								"value": "{{runId}}-{{$randomUUID}}"
+							},
+							{
+								"key": "Content-Type",
+								"value": "application/json"
+							}
+						],
+						"url": "{{vdBase}}/v1/auth/verify-email",
+						"body": {
+							"mode": "raw",
+							"raw": "{\n  \"email\": \"{{email}}\",\n  \"code\": \"{{verifyCode}}\"\n}",
+							"options": {
+								"raw": {
+									"language": "json"
+								}
+							}
+						},
+						"auth": {
+							"type": "noauth"
+						}
+					},
+					"event": [
+						{
+							"listen": "test",
+							"script": {
+								"type": "text/javascript",
+								"exec": [
+									"const j = pm.response.json();",
+									"pm.test('200 MFA_ENROLMENT_REQUIRED with enrolment token', () => {",
+									"    pm.response.to.have.status(200);",
+									"    pm.expect(j.status).to.eql('MFA_ENROLMENT_REQUIRED');",
+									"    pm.expect(j.enrolmentToken).to.be.a('string').and.not.empty;",
+									"});",
+									"pm.collectionVariables.set('enrolmentToken', j.enrolmentToken);"
+								]
+							}
+						}
+					]
+				},
+				{
+					"name": "VD - MFA enrol (get TOTP secret)",
+					"request": {
+						"method": "POST",
+						"header": [
+							{
+								"key": "X-Test-Partition",
+								"value": "{{partition}}"
+							},
+							{
+								"key": "X-Correlation-Id",
+								"value": "{{runId}}-{{$randomUUID}}"
+							},
+							{
+								"key": "Authorization",
+								"value": "Bearer {{enrolmentToken}}"
+							}
+						],
+						"url": "{{vdBase}}/v1/auth/mfa/enrol",
+						"auth": {
+							"type": "noauth"
+						}
+					},
+					"event": [
+						{
+							"listen": "test",
+							"script": {
+								"type": "text/javascript",
+								"exec": [
+									"const j = pm.response.json();",
+									"pm.test('200 with a base32 secret, SHA1 / 6 digits / 30 s', () => {",
+									"    pm.response.to.have.status(200);",
+									"    pm.expect(j.secret).to.match(/^[A-Z2-7]{16,}$/);",
+									"    pm.expect(j.otpauthUri).to.include('secret=' + j.secret);",
+									"    pm.expect(String(j.digits)).to.eql('6');",
+									"    pm.expect(String(j.period)).to.eql('30');",
+									"    pm.expect(j.qrSvg).to.include('<svg');",
+									"});",
+									"pm.collectionVariables.set('totpSecret', j.secret);"
+								]
+							}
+						}
+					]
+				},
+				{
+					"name": "TD - Save TOTP secret",
+					"request": {
+						"method": "GET",
+						"header": [],
+						"url": "{{tdBase}}/totp/set?key={{totpKey}}&user={{email}}&secret={{totpSecret}}",
+						"auth": {
+							"type": "noauth"
+						}
+					},
+					"event": [
+						{
+							"listen": "test",
+							"script": {
+								"type": "text/javascript",
+								"exec": [
+									"pm.test('Secret saved', () => {",
+									"    pm.response.to.have.status(200);",
+									"    pm.expect(pm.response.json().saved).to.eql(true);",
+									"});"
+								]
+							}
+						}
+					]
+				},
+				{
+					"name": "TD - Get TOTP code (activation)",
+					"request": {
+						"method": "GET",
+						"header": [],
+						"url": "{{tdBase}}/totp/get?key={{totpKey}}&user={{email}}",
+						"auth": {
+							"type": "noauth"
+						}
+					},
+					"event": [
+						{
+							"listen": "test",
+							"script": {
+								"type": "text/javascript",
+								"exec": [
+									"const j = pm.response.json();",
+									"pm.test('TOTP code generated', () => {",
+									"    pm.response.to.have.status(200);",
+									"    pm.expect(j.code).to.match(/^\\d{6}$/);",
+									"});",
+									"// Codes are single-use within a 30 s step: if this one was just used, take the next step's code",
+									"// (the server accepts +/-1 step for drift). If the step is about to roll, nextCode is also safer.",
+									"const last = pm.collectionVariables.get('lastTotpUsed');",
+									"const code = (j.code === last || j.secondsRemaining < 3) ? j.nextCode : j.code;",
+									"pm.collectionVariables.set('totpCode', code);"
+								]
+							}
+						}
+					]
+				},
+				{
+					"name": "VD - MFA activate",
+					"request": {
+						"method": "POST",
+						"header": [
+							{
+								"key": "X-Test-Partition",
+								"value": "{{partition}}"
+							},
+							{
+								"key": "X-Correlation-Id",
+								"value": "{{runId}}-{{$randomUUID}}"
+							},
+							{
+								"key": "Content-Type",
+								"value": "application/json"
+							},
+							{
+								"key": "Authorization",
+								"value": "Bearer {{enrolmentToken}}"
+							}
+						],
+						"url": "{{vdBase}}/v1/auth/mfa/activate",
+						"body": {
+							"mode": "raw",
+							"raw": "{\n  \"code\": \"{{totpCode}}\"\n}",
+							"options": {
+								"raw": {
+									"language": "json"
+								}
+							}
+						},
+						"auth": {
+							"type": "noauth"
+						}
+					},
+					"event": [
+						{
+							"listen": "test",
+							"script": {
+								"type": "text/javascript",
+								"exec": [
+									"const j = pm.response.json();",
+									"pm.test('200 ACTIVE with tokens and 8 recovery codes', () => {",
+									"    pm.response.to.have.status(200);",
+									"    pm.expect(j.status).to.eql('ACTIVE');",
+									"    pm.expect(j.accessToken).to.be.a('string').and.not.empty;",
+									"    pm.expect(j.recoveryCodes).to.have.lengthOf(8);",
+									"    pm.expect(j.user.mfaEnabled).to.be.true;",
+									"    pm.expect(j.user.email).to.eql(pm.collectionVariables.get('email'));",
+									"});",
+									"pm.collectionVariables.set('lastTotpUsed', pm.collectionVariables.get('totpCode'));",
+									"pm.collectionVariables.set('userId', j.user.userId);",
+									"pm.collectionVariables.set('recoveryCode1', j.recoveryCodes[0]);",
+									"pm.collectionVariables.set('popTries', '0');"
+								]
+							}
+						}
+					]
+				},
+				{
+					"name": "TD - Pop 'two-step verification is on' email",
+					"request": {
+						"method": "GET",
+						"header": [],
+						"url": "{{tdBase}}/mail/pop?address={{email}}&wait=20&grace=0",
+						"auth": {
+							"type": "noauth"
+						}
+					},
+					"event": [
+						{
+							"listen": "test",
+							"script": {
+								"type": "text/javascript",
+								"exec": [
+									"const next = (n) => (pm.execution && pm.execution.setNextRequest) ? pm.execution.setNextRequest(n) : postman.setNextRequest(n);",
+									"const j = pm.response.json();",
+									"const subject = j.subject || '';",
+									"const tries = Number(pm.collectionVariables.get('popTries') || 0) + 1;",
+									"pm.collectionVariables.set('popTries', String(tries));",
+									"if (!/two-step verification is on/i.test(subject) && tries < 3) { next(pm.info.requestName); } else {",
+									"pm.test('MFA confirmation email received', () => pm.expect(subject).to.match(/two-step verification is on/i));",
+									"}"
+								]
+							}
+						}
+					]
+				}
+			]
+		},
+		{
+			"name": "2 Sign in with password + TOTP",
+			"item": [
+				{
+					"name": "VD - Login (password)",
+					"request": {
+						"method": "POST",
+						"header": [
+							{
+								"key": "X-Test-Partition",
+								"value": "{{partition}}"
+							},
+							{
+								"key": "X-Correlation-Id",
+								"value": "{{runId}}-{{$randomUUID}}"
+							},
+							{
+								"key": "Content-Type",
+								"value": "application/json"
+							}
+						],
+						"url": "{{vdBase}}/v1/auth/login",
+						"body": {
+							"mode": "raw",
+							"raw": "{\n  \"email\": \"{{email}}\",\n  \"password\": \"{{password}}\"\n}",
+							"options": {
+								"raw": {
+									"language": "json"
+								}
+							}
+						},
+						"auth": {
+							"type": "noauth"
+						}
+					},
+					"event": [
+						{
+							"listen": "test",
+							"script": {
+								"type": "text/javascript",
+								"exec": [
+									"const j = pm.response.json();",
+									"pm.test('200 MFA_REQUIRED', () => {",
+									"    pm.response.to.have.status(200);",
+									"    pm.expect(j.status).to.eql('MFA_REQUIRED');",
+									"    pm.expect(j.mfaToken).to.be.a('string').and.not.empty;",
+									"});",
+									"pm.collectionVariables.set('mfaToken', j.mfaToken);"
+								]
+							}
+						}
+					]
+				},
+				{
+					"name": "TD - Get TOTP code (login)",
+					"request": {
+						"method": "GET",
+						"header": [],
+						"url": "{{tdBase}}/totp/get?key={{totpKey}}&user={{email}}",
+						"auth": {
+							"type": "noauth"
+						}
+					},
+					"event": [
+						{
+							"listen": "test",
+							"script": {
+								"type": "text/javascript",
+								"exec": [
+									"const j = pm.response.json();",
+									"pm.test('TOTP code generated', () => {",
+									"    pm.response.to.have.status(200);",
+									"    pm.expect(j.code).to.match(/^\\d{6}$/);",
+									"});",
+									"// Codes are single-use within a 30 s step: if this one was just used, take the next step's code",
+									"// (the server accepts +/-1 step for drift). If the step is about to roll, nextCode is also safer.",
+									"const last = pm.collectionVariables.get('lastTotpUsed');",
+									"const code = (j.code === last || j.secondsRemaining < 3) ? j.nextCode : j.code;",
+									"pm.collectionVariables.set('totpCode', code);"
+								]
+							}
+						}
+					]
+				},
+				{
+					"name": "VD - Login (TOTP)",
+					"request": {
+						"method": "POST",
+						"header": [
+							{
+								"key": "X-Test-Partition",
+								"value": "{{partition}}"
+							},
+							{
+								"key": "X-Correlation-Id",
+								"value": "{{runId}}-{{$randomUUID}}"
+							},
+							{
+								"key": "Content-Type",
+								"value": "application/json"
+							}
+						],
+						"url": "{{vdBase}}/v1/auth/login/mfa",
+						"body": {
+							"mode": "raw",
+							"raw": "{\n  \"mfaToken\": \"{{mfaToken}}\",\n  \"code\": \"{{totpCode}}\"\n}",
+							"options": {
+								"raw": {
+									"language": "json"
+								}
+							}
+						},
+						"auth": {
+							"type": "noauth"
+						}
+					},
+					"event": [
+						{
+							"listen": "test",
+							"script": {
+								"type": "text/javascript",
+								"exec": [
+									"const j = pm.response.json();",
+									"pm.test('200 with access and refresh tokens', () => {",
+									"    pm.response.to.have.status(200);",
+									"    pm.expect(j.accessToken).to.be.a('string').and.not.empty;",
+									"    pm.expect(j.refreshToken).to.be.a('string').and.not.empty;",
+									"    pm.expect(j.expiresIn).to.be.above(0);",
+									"});",
+									"pm.collectionVariables.set('lastTotpUsed', pm.collectionVariables.get('totpCode'));",
+									"pm.collectionVariables.set('accessToken', j.accessToken);",
+									"pm.collectionVariables.set('refreshToken', j.refreshToken);"
+								]
+							}
+						}
+					]
+				},
+				{
+					"name": "VD - Me",
+					"request": {
+						"method": "GET",
+						"header": [
+							{
+								"key": "X-Test-Partition",
+								"value": "{{partition}}"
+							},
+							{
+								"key": "X-Correlation-Id",
+								"value": "{{runId}}-{{$randomUUID}}"
+							}
+						],
+						"url": "{{vdBase}}/v1/me"
+					},
+					"event": [
+						{
+							"listen": "test",
+							"script": {
+								"type": "text/javascript",
+								"exec": [
+									"const j = pm.response.json();",
+									"pm.test('Active, MFA-enabled customer', () => {",
+									"    pm.response.to.have.status(200);",
+									"    pm.expect(j.email).to.eql(pm.collectionVariables.get('email'));",
+									"    pm.expect(j.status).to.eql('ACTIVE');",
+									"    pm.expect(j.mfaEnabled).to.be.true;",
+									"    pm.expect(j.givenName).to.eql(pm.collectionVariables.get('givenName'));",
+									"    pm.expect(j.userId).to.eql(pm.collectionVariables.get('userId'));",
+									"});",
+									"pm.test('Test clock not simulated', () => pm.expect(j.testClock.offsetDays).to.eql(0));"
+								]
+							}
+						}
+					]
+				}
+			]
+		},
+		{
+			"name": "3 Order an item and book delivery",
+			"item": [
+				{
+					"name": "VD - Product",
+					"request": {
+						"method": "GET",
+						"header": [
+							{
+								"key": "X-Test-Partition",
+								"value": "{{partition}}"
+							},
+							{
+								"key": "X-Correlation-Id",
+								"value": "{{runId}}-{{$randomUUID}}"
+							}
+						],
+						"url": "{{vdBase}}/v1/catalogue/{{sku}}",
+						"auth": {
+							"type": "noauth"
+						}
+					},
+					"event": [
+						{
+							"listen": "test",
+							"script": {
+								"type": "text/javascript",
+								"exec": [
+									"const j = pm.response.json();",
+									"pm.test('Product exists and is a planter', () => {",
+									"    pm.response.to.have.status(200);",
+									"    pm.expect(j.sku).to.eql(pm.collectionVariables.get('sku'));",
+									"    pm.expect(j.priceCents).to.be.above(0);",
+									"});",
+									"pm.collectionVariables.set('unitPriceCents', String(j.priceCents));"
+								]
+							}
+						}
+					]
+				},
+				{
+					"name": "VD - Add delivery address",
+					"request": {
+						"method": "POST",
+						"header": [
+							{
+								"key": "X-Test-Partition",
+								"value": "{{partition}}"
+							},
+							{
+								"key": "X-Correlation-Id",
+								"value": "{{runId}}-{{$randomUUID}}"
+							},
+							{
+								"key": "Content-Type",
+								"value": "application/json"
+							}
+						],
+						"url": "{{vdBase}}/v1/me/addresses",
+						"body": {
+							"mode": "raw",
+							"raw": "{\n  \"label\": \"Home\",\n  \"recipientName\": \"{{givenName}} {{familyName}}\",\n  \"phone\": \"{{mobile}}\",\n  \"line1\": \"{{addrLine1}}\",\n  \"suburb\": \"{{addrSuburb}}\",\n  \"state\": \"VIC\",\n  \"postcode\": \"{{addrPostcode}}\",\n  \"siteAccess\": \"GROUND\",\n  \"instructions\": \"Front gate has a security keypad - code to follow by email\",\n  \"isDefault\": true\n}",
+							"options": {
+								"raw": {
+									"language": "json"
+								}
+							}
+						}
+					},
+					"event": [
+						{
+							"listen": "test",
+							"script": {
+								"type": "text/javascript",
+								"exec": [
+									"const j = pm.response.json();",
+									"pm.test('201 address, serviceable METRO', () => {",
+									"    pm.response.to.have.status(201);",
+									"    pm.expect(j.addressId).to.be.a('string').and.not.empty;",
+									"    pm.expect(j.suburb).to.eql(pm.collectionVariables.get('addrSuburb').toUpperCase());",
+									"    pm.expect(j.postcode).to.eql(pm.collectionVariables.get('addrPostcode'));",
+									"    pm.expect(j.serviceArea.serviceable).to.be.true;",
+									"    pm.expect(j.serviceArea.zone).to.eql('METRO');",
+									"});",
+									"pm.collectionVariables.set('addressId', j.addressId);"
+								]
+							}
+						}
+					]
+				},
+				{
+					"name": "VD - Empty cart",
+					"request": {
+						"method": "DELETE",
+						"header": [
+							{
+								"key": "X-Test-Partition",
+								"value": "{{partition}}"
+							},
+							{
+								"key": "X-Correlation-Id",
+								"value": "{{runId}}-{{$randomUUID}}"
+							}
+						],
+						"url": "{{vdBase}}/v1/cart"
+					},
+					"event": [
+						{
+							"listen": "test",
+							"script": {
+								"type": "text/javascript",
+								"exec": [
+									"pm.test('Cart emptied', () => pm.response.to.have.status(200));"
+								]
+							}
+						}
+					]
+				},
+				{
+					"name": "VD - Add item to cart",
+					"request": {
+						"method": "PUT",
+						"header": [
+							{
+								"key": "X-Test-Partition",
+								"value": "{{partition}}"
+							},
+							{
+								"key": "X-Correlation-Id",
+								"value": "{{runId}}-{{$randomUUID}}"
+							},
+							{
+								"key": "Content-Type",
+								"value": "application/json"
+							}
+						],
+						"url": "{{vdBase}}/v1/cart/items/{{sku}}",
+						"body": {
+							"mode": "raw",
+							"raw": "{\n  \"quantity\": 1,\n  \"coverPlan\": null\n}",
+							"options": {
+								"raw": {
+									"language": "json"
+								}
+							}
+						}
+					},
+					"event": [
+						{
+							"listen": "test",
+							"script": {
+								"type": "text/javascript",
+								"exec": [
+									"const j = pm.response.json();",
+									"pm.test('One line, no rule violations', () => {",
+									"    pm.response.to.have.status(200);",
+									"    pm.expect(j.issues).to.be.an('array').that.is.empty;",
+									"    pm.expect(j.totals.merchandiseCents).to.eql(Number(pm.collectionVariables.get('unitPriceCents')));",
+									"});",
+									"pm.collectionVariables.set('cartVersion', String(j.version));"
+								]
+							}
+						}
+					]
+				},
+				{
+					"name": "VD - Checkout quote",
+					"request": {
+						"method": "POST",
+						"header": [
+							{
+								"key": "X-Test-Partition",
+								"value": "{{partition}}"
+							},
+							{
+								"key": "X-Correlation-Id",
+								"value": "{{runId}}-{{$randomUUID}}"
+							},
+							{
+								"key": "Content-Type",
+								"value": "application/json"
+							}
+						],
+						"url": "{{vdBase}}/v1/checkout/quote",
+						"body": {
+							"mode": "raw",
+							"raw": "{\n  \"addressId\": \"{{addressId}}\"\n}",
+							"options": {
+								"raw": {
+									"language": "json"
+								}
+							}
+						}
+					},
+					"event": [
+						{
+							"listen": "test",
+							"script": {
+								"type": "text/javascript",
+								"exec": [
+									"const j = pm.response.json();",
+									"pm.test('Quote allows checkout', () => {",
+									"    pm.response.to.have.status(200);",
+									"    pm.expect(j.canCheckout).to.be.true;",
+									"    pm.expect(j.issues).to.be.empty;",
+									"    pm.expect(j.delivery.deliverable).to.be.true;",
+									"    pm.expect(j.lines).to.have.lengthOf(1);",
+									"});",
+									"pm.test('Totals add up (merchandise + cover + delivery)', () => {",
+									"    const t = j.totals;",
+									"    pm.expect(t.merchandiseCents + t.coverCents + t.deliveryCents).to.eql(t.totalCents);",
+									"    pm.expect(t.gstCents).to.eql(Math.round(t.totalCents / 11));",
+									"});",
+									"pm.collectionVariables.set('cartVersion', String(j.cartVersion));",
+									"pm.collectionVariables.set('expectedTotalCents', String(j.totals.totalCents));",
+									"pm.collectionVariables.set('windowsAllowed', JSON.stringify(j.delivery.windowsAllowed));"
+								]
+							}
+						}
+					]
+				},
+				{
+					"name": "VD - Delivery slots",
+					"request": {
+						"method": "GET",
+						"header": [
+							{
+								"key": "X-Test-Partition",
+								"value": "{{partition}}"
+							},
+							{
+								"key": "X-Correlation-Id",
+								"value": "{{runId}}-{{$randomUUID}}"
+							}
+						],
+						"url": "{{vdBase}}/v1/delivery/slots?addressId={{addressId}}"
+					},
+					"event": [
+						{
+							"listen": "test",
+							"script": {
+								"type": "text/javascript",
+								"exec": [
+									"const j = pm.response.json();",
+									"const allowed = JSON.parse(pm.collectionVariables.get('windowsAllowed') || '[\"AM\",\"PM\"]');",
+									"let pick = null;",
+									"for (const d of j.days || []) {",
+									"    if (d.closed) continue;",
+									"    const w = (d.windows || []).find(w => w.available && allowed.includes(w.code));",
+									"    if (w) { pick = { date: d.date, window: w.code, times: w.times, day: d.dayOfWeek }; break; }",
+									"}",
+									"pm.test('A bookable delivery window exists', () => {",
+									"    pm.response.to.have.status(200);",
+									"    pm.expect(pick, 'first available window').to.not.be.null;",
+									"    const dow = new Date(pick.date + 'T00:00:00Z').getUTCDay();",
+									"    pm.expect(dow, 'weekday').to.be.within(1, 5);",
+									"    pm.expect(pick.date >= j.firstDate && pick.date <= j.lastDate).to.be.true;",
+									"});",
+									"pm.collectionVariables.set('deliveryDate', pick.date);",
+									"pm.collectionVariables.set('deliveryWindow', pick.window);",
+									"console.log(`Booking ${pick.day} ${pick.date} ${pick.window} (${pick.times})`);"
+								]
+							}
+						}
+					]
+				},
+				{
+					"name": "VD - Place order (book delivery)",
+					"request": {
+						"method": "POST",
+						"header": [
+							{
+								"key": "X-Test-Partition",
+								"value": "{{partition}}"
+							},
+							{
+								"key": "X-Correlation-Id",
+								"value": "{{runId}}-{{$randomUUID}}"
+							},
+							{
+								"key": "Content-Type",
+								"value": "application/json"
+							},
+							{
+								"key": "Idempotency-Key",
+								"value": "{{runId}}-order"
+							}
+						],
+						"url": "{{vdBase}}/v1/orders",
+						"body": {
+							"mode": "raw",
+							"raw": "{\n  \"addressId\": \"{{addressId}}\",\n  \"delivery\": { \"date\": \"{{deliveryDate}}\", \"window\": \"{{deliveryWindow}}\" },\n  \"payment\": {\n    \"nameOnCard\": \"{{givenName}} {{familyName}}\",\n    \"cardNumber\": \"{{testCardNumber}}\",\n    \"expiryMonth\": \"12\",\n    \"expiryYear\": \"2030\",\n    \"cvv\": \"{{testCardCvv}}\"\n  },\n  \"cartVersion\": {{cartVersion}},\n  \"expectedTotalCents\": {{expectedTotalCents}}\n}",
+							"options": {
+								"raw": {
+									"language": "json"
+								}
+							}
+						}
+					},
+					"event": [
+						{
+							"listen": "test",
+							"script": {
+								"type": "text/javascript",
+								"exec": [
+									"const j = pm.response.json();",
+									"pm.test('201 order CONFIRMED', () => {",
+									"    pm.response.to.have.status(201);",
+									"    pm.expect(j.status).to.eql('CONFIRMED');",
+									"    pm.expect(j.orderNumber).to.match(/^VD-\\d{6}-[A-Z0-9]{5}$/);",
+									"});",
+									"pm.test('Delivery booked on the chosen date and window', () => {",
+									"    pm.expect(j.delivery.date).to.eql(pm.collectionVariables.get('deliveryDate'));",
+									"    pm.expect(j.delivery.window).to.eql(pm.collectionVariables.get('deliveryWindow'));",
+									"    pm.expect(j.delivery.truck).to.be.a('string').and.not.empty;",
+									"});",
+									"pm.test('Charged the quoted total', () => {",
+									"    pm.expect(j.totals.totalCents).to.eql(Number(pm.collectionVariables.get('expectedTotalCents')));",
+									"    pm.expect(j.payment.last4).to.eql(pm.collectionVariables.get('testCardNumber').replace(/\\D/g, '').slice(-4));",
+									"    pm.expect(j.payment.authCode).to.be.a('string').and.not.empty;",
+									"});",
+									"pm.collectionVariables.set('orderId', j.orderId);",
+									"pm.collectionVariables.set('orderNumber', j.orderNumber);",
+									"pm.collectionVariables.set('popTries', '0');"
+								]
+							}
+						}
+					]
+				},
+				{
+					"name": "VD - Get order",
+					"request": {
+						"method": "GET",
+						"header": [
+							{
+								"key": "X-Test-Partition",
+								"value": "{{partition}}"
+							},
+							{
+								"key": "X-Correlation-Id",
+								"value": "{{runId}}-{{$randomUUID}}"
+							}
+						],
+						"url": "{{vdBase}}/v1/orders/{{orderId}}"
+					},
+					"event": [
+						{
+							"listen": "test",
+							"script": {
+								"type": "text/javascript",
+								"exec": [
+									"const j = pm.response.json();",
+									"pm.test('Order readable and matches booking', () => {",
+									"    pm.response.to.have.status(200);",
+									"    pm.expect(j.orderNumber).to.eql(pm.collectionVariables.get('orderNumber'));",
+									"    pm.expect(j.status).to.eql('CONFIRMED');",
+									"    pm.expect(j.address.suburb).to.eql(pm.collectionVariables.get('addrSuburb').toUpperCase());",
+									"    pm.expect(j.lines[0].sku).to.eql(pm.collectionVariables.get('sku'));",
+									"    pm.expect(j.cancellable).to.be.true;",
+									"});"
+								]
+							}
+						}
+					]
+				},
+				{
+					"name": "TD - Pop tax invoice email",
+					"request": {
+						"method": "GET",
+						"header": [],
+						"url": "{{tdBase}}/mail/pop?address={{email}}&wait=20&grace=0",
+						"auth": {
+							"type": "noauth"
+						}
+					},
+					"event": [
+						{
+							"listen": "test",
+							"script": {
+								"type": "text/javascript",
+								"exec": [
+									"const next = (n) => (pm.execution && pm.execution.setNextRequest) ? pm.execution.setNextRequest(n) : postman.setNextRequest(n);",
+									"const j = pm.response.json();",
+									"const subject = j.subject || '';",
+									"const orderNumber = pm.collectionVariables.get('orderNumber');",
+									"const tries = Number(pm.collectionVariables.get('popTries') || 0) + 1;",
+									"pm.collectionVariables.set('popTries', String(tries));",
+									"const hit = subject.includes(orderNumber);",
+									"if (!hit && tries < 4) { console.log(`Skipping: ${subject || 'no mail'}`); next(pm.info.requestName); } else {",
+									"const win = { AM: 'Morning', PM: 'Afternoon', FULL: 'Full day' }[pm.collectionVariables.get('deliveryWindow')];",
+									"const body = j.body || '';",
+									"pm.test('Order confirmation email: subject carries order, date and window', () => {",
+									"    pm.expect(subject).to.eql(`Order ${orderNumber} confirmed - delivery ${pm.collectionVariables.get('deliveryDate')} ${win}`);",
+									"    pm.expect(j.from).to.include('verdant');",
+									"});",
+									"pm.test('Email is the tax invoice with the right total, card and address', () => {",
+									"    // $1,835.00 - formatted by hand so it does not depend on the sandbox's ICU locale data",
+									"    const total = (Number(pm.collectionVariables.get('expectedTotalCents')) / 100).toFixed(2).replace(/\\B(?=(\\d{3})+(?!\\d))/g, ',');",
+									"    pm.expect(body).to.include('This email is your tax invoice');",
+									"    pm.expect(body).to.include(`Total paid: $${total}`);",
+									"    pm.expect(body).to.include('Visa ending ' + pm.collectionVariables.get('testCardNumber').replace(/\\D/g, '').slice(-4));",
+									"    pm.expect(body).to.include(`${pm.collectionVariables.get('addrLine1')}, ${pm.collectionVariables.get('addrSuburb').toUpperCase()} VIC ${pm.collectionVariables.get('addrPostcode')}`);",
+									"});",
+									"}"
+								]
+							}
+						}
+					]
+				}
+			]
+		},
+		{
+			"name": "3b Chat with the assistant, end it, check the case and transcript email",
+			"item": [
+				{
+					"name": "VD - Assistant info and customer context",
+					"request": {
+						"method": "GET",
+						"header": [
+							{
+								"key": "X-Test-Partition",
+								"value": "{{partition}}"
+							},
+							{
+								"key": "X-Correlation-Id",
+								"value": "{{runId}}-{{$randomUUID}}"
+							}
+						],
+						"url": "{{vdBase}}/v1/chat"
+					},
+					"event": [
+						{
+							"listen": "test",
+							"script": {
+								"type": "text/javascript",
+								"exec": [
+									"const j = pm.response.json();",
+									"const ctx = JSON.stringify(j.context || '');",
+									"pm.test('Assistant available (openai or demo mode)', () => {",
+									"    pm.response.to.have.status(200);",
+									"    pm.expect(['openai', 'demo']).to.include(j.mode);",
+									"});",
+									"pm.test('Context the assistant is given includes the new order and its delivery', () => {",
+									"    pm.expect(ctx).to.include(pm.collectionVariables.get('orderNumber'));",
+									"    pm.expect(ctx).to.include(pm.collectionVariables.get('deliveryDate'));",
+									"});",
+									"console.log(`Assistant mode ${j.mode}${j.model ? ' (' + j.model + ')' : ''}`);",
+									"pm.collectionVariables.set('chatMode', j.mode);",
+									"pm.collectionVariables.set('chatHistory', '[]');",
+									"pm.collectionVariables.set('chatConversationId', '');",
+									"pm.collectionVariables.set('chatTurn', '0');",
+									"pm.collectionVariables.set('popTries', '0');"
+								]
+							}
+						}
+					]
+				},
+				{
+					"name": "VD - Ask the assistant (loops over chatQuestions)",
+					"request": {
+						"method": "POST",
+						"header": [
+							{
+								"key": "X-Test-Partition",
+								"value": "{{partition}}"
+							},
+							{
+								"key": "X-Correlation-Id",
+								"value": "{{runId}}-{{$randomUUID}}"
+							},
+							{
+								"key": "Content-Type",
+								"value": "application/json"
+							}
+						],
+						"url": "{{vdBase}}/v1/chat",
+						"body": {
+							"mode": "raw",
+							"raw": "{{chatBody}}",
+							"options": {
+								"raw": {
+									"language": "json"
+								}
+							}
+						}
+					},
+					"event": [
+						{
+							"listen": "prerequest",
+							"script": {
+								"type": "text/javascript",
+								"exec": [
+									"const questions = JSON.parse(pm.variables.get('chatQuestions'));",
+									"const turn = Number(pm.collectionVariables.get('chatTurn') || 0);",
+									"const history = JSON.parse(pm.collectionVariables.get('chatHistory') || '[]');",
+									"const q = questions[turn].replace('{{gateCode}}', pm.collectionVariables.get('gateCode'));",
+									"history.push({ role: 'user', content: q });",
+									"pm.collectionVariables.set('chatHistory', JSON.stringify(history));",
+									"pm.collectionVariables.set('chatLastQuestion', q);",
+									"const body = { messages: history.slice(-12) };          // the widget sends the last 12 turns",
+									"const cid = pm.collectionVariables.get('chatConversationId');",
+									"if (cid) body.conversationId = cid;                      // omitted on the first turn: starts a conversation",
+									"pm.collectionVariables.set('chatBody', JSON.stringify(body));"
+								]
+							}
+						},
+						{
+							"listen": "test",
+							"script": {
+								"type": "text/javascript",
+								"exec": [
+									"const next = (n) => (pm.execution && pm.execution.setNextRequest) ? pm.execution.setNextRequest(n) : postman.setNextRequest(n);",
+									"const turn = Number(pm.collectionVariables.get('chatTurn') || 0);",
+									"const questions = JSON.parse(pm.variables.get('chatQuestions'));",
+									"if (pm.response.code === 429 || pm.response.code === 503) {",
+									"    console.log('Assistant refused/unavailable:', pm.response.text());",
+									"}",
+									"const j = pm.response.json();",
+									"pm.test(`Turn ${turn + 1}: assistant replied`, () => {",
+									"    pm.response.to.have.status(200);",
+									"    pm.expect(j.reply).to.be.a('string').and.not.empty;",
+									"    pm.expect(j.conversationId).to.be.a('string').and.not.empty;",
+									"});",
+									"pm.test(`Turn ${turn + 1}: same conversation, nothing filed on the way`, () => {",
+									"    const cid = pm.collectionVariables.get('chatConversationId');",
+									"    if (cid) pm.expect(j.conversationId).to.eql(cid);",
+									"    pm.expect(j.previous || null, 'previous conversation filed unexpectedly').to.be.null;",
+									"});",
+									"if (turn === 0) {",
+									"    // \"When is my delivery?\" - wording differs in openai mode, so accept the date in any common form",
+									"    const d = new Date(pm.collectionVariables.get('deliveryDate') + 'T00:00:00Z');",
+									"    const forms = [pm.collectionVariables.get('deliveryDate'),",
+									"        d.getUTCDate() + ' ' + d.toLocaleString('en-AU', { month: 'long', timeZone: 'UTC' }),",
+									"        d.getUTCDate() + ' ' + d.toLocaleString('en-AU', { month: 'short', timeZone: 'UTC' }),",
+									"        pm.collectionVariables.get('orderNumber')];",
+									"    pm.test('Delivery answer mentions the booked date or the order', () => {",
+									"        pm.expect(forms.some(f => j.reply.includes(f)), `reply: ${j.reply}`).to.be.true;",
+									"    });",
+									"}",
+									"console.log(`Q${turn + 1}: ${pm.collectionVariables.get('chatLastQuestion')}\\nA${turn + 1}: ${(j.reply || '').slice(0, 300)}`);",
+									"const history = JSON.parse(pm.collectionVariables.get('chatHistory'));",
+									"if (j.reply) history.push({ role: 'assistant', content: j.reply });",
+									"pm.collectionVariables.set('chatHistory', JSON.stringify(history));",
+									"if (j.conversationId) pm.collectionVariables.set('chatConversationId', j.conversationId);",
+									"if (turn === 0 && j.reply) pm.collectionVariables.set('chatFirstReply', j.reply);",
+									"pm.collectionVariables.set('chatTurn', String(turn + 1));",
+									"if (turn + 1 < questions.length && pm.response.code === 200) next(pm.info.requestName);"
+								]
+							}
+						}
+					]
+				},
+				{
+					"name": "VD - End chat",
+					"request": {
+						"method": "POST",
+						"header": [
+							{
+								"key": "X-Test-Partition",
+								"value": "{{partition}}"
+							},
+							{
+								"key": "X-Correlation-Id",
+								"value": "{{runId}}-{{$randomUUID}}"
+							},
+							{
+								"key": "Content-Type",
+								"value": "application/json"
+							}
+						],
+						"url": "{{vdBase}}/v1/chat/end",
+						"body": {
+							"mode": "raw",
+							"raw": "{\n  \"conversationId\": \"{{chatConversationId}}\"\n}",
+							"options": {
+								"raw": {
+									"language": "json"
+								}
+							}
+						}
+					},
+					"event": [
+						{
+							"listen": "test",
+							"script": {
+								"type": "text/javascript",
+								"exec": [
+									"const j = pm.response.json();",
+									"pm.test('Chat ended and filed as a case', () => {",
+									"    pm.response.to.have.status(200);",
+									"    pm.expect(j.conversationId).to.eql(pm.collectionVariables.get('chatConversationId'));",
+									"    pm.expect(j.caseId).to.match(/^C-\\d{6}-[A-Z0-9]{5}$/);",
+									"});",
+									"if (j.caseId) pm.collectionVariables.set('chatCaseId', j.caseId);",
+									"console.log('Chat filed as case ' + j.caseId + (j.page ? ' (' + j.page + ')' : ''));"
+								]
+							}
+						}
+					]
+				},
+				{
+					"name": "VD - End chat again (idempotent)",
+					"request": {
+						"method": "POST",
+						"header": [
+							{
+								"key": "X-Test-Partition",
+								"value": "{{partition}}"
+							},
+							{
+								"key": "X-Correlation-Id",
+								"value": "{{runId}}-{{$randomUUID}}"
+							},
+							{
+								"key": "Content-Type",
+								"value": "application/json"
+							}
+						],
+						"url": "{{vdBase}}/v1/chat/end",
+						"body": {
+							"mode": "raw",
+							"raw": "{\n  \"conversationId\": \"{{chatConversationId}}\"\n}",
+							"options": {
+								"raw": {
+									"language": "json"
+								}
+							}
+						}
+					},
+					"event": [
+						{
+							"listen": "test",
+							"script": {
+								"type": "text/javascript",
+								"exec": [
+									"const j = pm.response.json();",
+									"pm.test('Second end returns the same case - no duplicate', () => {",
+									"    pm.response.to.have.status(200);",
+									"    pm.expect(j.caseId).to.eql(pm.collectionVariables.get('chatCaseId'));",
+									"});"
+								]
+							}
+						}
+					]
+				},
+				{
+					"name": "VD - Help tab lists the chat case",
+					"request": {
+						"method": "GET",
+						"header": [
+							{
+								"key": "X-Test-Partition",
+								"value": "{{partition}}"
+							},
+							{
+								"key": "X-Correlation-Id",
+								"value": "{{runId}}-{{$randomUUID}}"
+							}
+						],
+						"url": "{{vdBase}}/v1/cases"
+					},
+					"event": [
+						{
+							"listen": "test",
+							"script": {
+								"type": "text/javascript",
+								"exec": [
+									"const j = pm.response.json();",
+									"const id = pm.collectionVariables.get('chatCaseId');",
+									"const c = (j.cases || []).find(c => c.caseId === id);",
+									"pm.test('Chat case is listed under Help, CLOSED, type CHAT', () => {",
+									"    pm.response.to.have.status(200);",
+									"    pm.expect(c, `case ${id} in /v1/cases`).to.exist;",
+									"    pm.expect(c.type).to.eql('CHAT');",
+									"    pm.expect(c.status).to.eql('CLOSED');",
+									"    pm.expect(c.subject).to.be.a('string').and.not.empty;",
+									"});"
+								]
+							}
+						}
+					]
+				},
+				{
+					"name": "VD - Chat case summary and transcript",
+					"request": {
+						"method": "GET",
+						"header": [
+							{
+								"key": "X-Test-Partition",
+								"value": "{{partition}}"
+							},
+							{
+								"key": "X-Correlation-Id",
+								"value": "{{runId}}-{{$randomUUID}}"
+							}
+						],
+						"url": "{{vdBase}}/v1/cases/{{chatCaseId}}"
+					},
+					"event": [
+						{
+							"listen": "test",
+							"script": {
+								"type": "text/javascript",
+								"exec": [
+									"const j = pm.response.json();",
+									"const text = JSON.stringify(j);",
+									"const history = JSON.parse(pm.collectionVariables.get('chatHistory'));",
+									"pm.test('Case is the closed chat, raised by the customer', () => {",
+									"    pm.response.to.have.status(200);",
+									"    pm.expect(j.caseId).to.eql(pm.collectionVariables.get('chatCaseId'));",
+									"    pm.expect(j.type).to.eql('CHAT');",
+									"    pm.expect(j.status).to.eql('CLOSED');",
+									"    pm.expect(j.initiator.email).to.eql(pm.collectionVariables.get('email'));",
+									"});",
+									"pm.test('Transcript message is present (author type chat)', () => {",
+									"    pm.expect((j.messages || []).some(m => m.author && m.author.type === 'chat')).to.be.true;",
+									"});",
+									"pm.test('Transcript contains every question asked', () => {",
+									"    history.filter(m => m.role === 'user').forEach(m => pm.expect(text, m.content).to.include(JSON.stringify(m.content).slice(1, -1)));",
+									"});",
+									"pm.test('Customer can reopen it (within 7 days)', () => pm.expect(j.canReopen).to.be.true);"
+								]
+							}
+						}
+					]
+				},
+				{
+					"name": "TD - Pop chat transcript email",
+					"request": {
+						"method": "GET",
+						"header": [],
+						"url": "{{tdBase}}/mail/pop?address={{email}}&wait=20&grace=0",
+						"auth": {
+							"type": "noauth"
+						}
+					},
+					"event": [
+						{
+							"listen": "test",
+							"script": {
+								"type": "text/javascript",
+								"exec": [
+									"const next = (n) => (pm.execution && pm.execution.setNextRequest) ? pm.execution.setNextRequest(n) : postman.setNextRequest(n);",
+									"const j = pm.response.json();",
+									"const subject = j.subject || '';",
+									"const id = pm.collectionVariables.get('chatCaseId');",
+									"const tries = Number(pm.collectionVariables.get('popTries') || 0) + 1;",
+									"pm.collectionVariables.set('popTries', String(tries));",
+									"if (!subject.includes(id) && tries < 6) { console.log(`Waiting for transcript email (${subject || 'no mail'}) - try ${tries}/6`); next(pm.info.requestName); } else {",
+									"const body = j.body || '';",
+									"const history = JSON.parse(pm.collectionVariables.get('chatHistory'));",
+									"pm.test('Transcript email received for the chat case', () => {",
+									"    pm.expect(subject, 'subject carries the case id').to.include(id);",
+									"    pm.expect(j.from).to.include('verdant');",
+									"});",
+									"pm.test('Email carries the chat history (every question asked)', () => {",
+									"    const flat = body.replace(/\\s+/g, ' ');",
+									"    history.filter(m => m.role === 'user').forEach(m => pm.expect(flat, m.content).to.include(m.content.replace(/\\s+/g, ' ')));",
+									"});",
+									"pm.test('Email includes the assistant\\'s answers', () => {",
+									"    const first = (pm.collectionVariables.get('chatFirstReply') || '').replace(/\\s+/g, ' ').slice(0, 40);",
+									"    pm.expect(body.replace(/\\s+/g, ' ')).to.include(first);",
+									"});",
+									"pm.collectionVariables.set('popTries', '0');",
+									"}"
+								]
+							}
+						}
+					]
+				}
+			],
+			"description": "Asks the assistant the questions in chatQuestions (one conversation, full history sent each turn), ends the chat, then checks the CLOSED CHAT case under Help (GET /v1/cases) and the transcript email."
+		},
+		{
+			"name": "4 Email support and check for a new case",
+			"item": [
+				{
+					"name": "TD - Clear inbox before emailing support",
+					"request": {
+						"method": "GET",
+						"header": [],
+						"url": "{{tdBase}}/mail/clear?address={{email}}",
+						"auth": {
+							"type": "noauth"
+						}
+					},
+					"event": [
+						{
+							"listen": "test",
+							"script": {
+								"type": "text/javascript",
+								"exec": [
+									"pm.test('Inbox cleared', () => pm.response.to.have.status(200));",
+									"pm.collectionVariables.set('popTries', '0');",
+									"pm.collectionVariables.set('emailSentUtc', String(Math.floor(Date.now() / 1000)));"
+								]
+							}
+						}
+					]
+				},
+				{
+					"name": "TD - Email support from the new customer",
+					"request": {
+						"method": "POST",
+						"header": [
+							{
+								"key": "Content-Type",
+								"value": "text/plain"
+							}
+						],
+						"url": "{{tdBase}}/mail/send?from={{email}}&to={{supportAddress}}&subject=Front%20gate%20security%20code%20for%20order%20{{orderNumber}}",
+						"body": {
+							"mode": "raw",
+							"raw": "Hi Verdant Dock,\n\nOur front gate requires entry of a security code. Please ask the driver and technician to enter {{gateCode}} at the keypad for the delivery of order {{orderNumber}} on {{deliveryDate}} ({{deliveryWindow}}).\n\nThanks,\n{{givenName}} {{familyName}}\n{{addrLine1}}, {{addrSuburb}} VIC {{addrPostcode}}",
+							"options": {
+								"raw": {
+									"language": "text"
+								}
+							}
+						},
+						"auth": {
+							"type": "noauth"
+						}
+					},
+					"event": [
+						{
+							"listen": "test",
+							"script": {
+								"type": "text/javascript",
+								"exec": [
+									"const ok = pm.response.code === 200 && /messageid/i.test(pm.response.text());",
+									"pm.test('Email accepted by the helper API', () => {",
+									"    if (pm.response.code === 403) {",
+									"        pm.expect.fail('403 recipient not permitted - add ' + pm.collectionVariables.get('supportAddress') +",
+									"            ' (or testthis.now) to the EmailSendAllowedTo / EmailSendAllowedDomains parameters of the testdata.help stack. ' + pm.response.text());",
+									"    }",
+									"    pm.response.to.have.status(200);",
+									"    pm.expect(pm.response.text()).to.match(/messageid/i);",
+									"});",
+									"if (!ok) {",
+									"    // Nothing was sent, so there is no case to wait for - skip straight to banking/cleanup",
+									"    const skip = (pm.execution && pm.execution.setNextRequest) ? (n) => pm.execution.setNextRequest(n) : (n) => postman.setNextRequest(n);",
+									"    skip('VD - Staff token refresh');",
+									"}"
+								]
+							}
+						}
+					]
+				},
+				{
+					"name": "TD - Pop new case email",
+					"request": {
+						"method": "GET",
+						"header": [],
+						"url": "{{tdBase}}/mail/pop?address={{email}}&wait=20&grace=0",
+						"auth": {
+							"type": "noauth"
+						}
+					},
+					"event": [
+						{
+							"listen": "test",
+							"script": {
+								"type": "text/javascript",
+								"exec": [
+									"const next = (n) => (pm.execution && pm.execution.setNextRequest) ? pm.execution.setNextRequest(n) : postman.setNextRequest(n);",
+									"const j = pm.response.json();",
+									"const subject = j.subject || '';",
+									"const maxTries = Number(pm.variables.get('caseEmailMaxTries') || 6);   // 6 x 20 s = 2 minutes",
+									"const tries = Number(pm.collectionVariables.get('popTries') || 0) + 1;",
+									"pm.collectionVariables.set('popTries', String(tries));",
+									"let m = subject.match(/\\[(C-\\d{6}-[A-Z0-9]{5})\\]/);",
+									"// Ignore a late chat-transcript email - we want the case raised by the support email",
+									"if (m && m[1] === pm.collectionVariables.get('chatCaseId')) m = null;",
+									"if (!m && tries < maxTries) { console.log(`No case email yet (${subject || 'no mail'}) - try ${tries}/${maxTries}`); next(pm.info.requestName); } else {",
+									"pm.test('New case email received with a case reference', () => {",
+									"    pm.expect(m, `subject: ${subject}`).to.not.be.null;",
+									"    pm.expect(j.from).to.include('verdant');",
+									"    pm.expect(j.address).to.eql(pm.collectionVariables.get('email'));",
+									"});",
+									"pm.test('Case reference is dated today or yesterday (Melbourne vs UTC)', () => {",
+									"    const d = m[1].slice(2, 8);",
+									"    const fmt = (t) => new Date(t).toISOString().slice(2, 10).replace(/-/g, '');",
+									"    const now = Date.now();",
+									"    pm.expect([fmt(now), fmt(now + 11 * 3600e3), fmt(now - 86400e3)]).to.include(d);",
+									"});",
+									"if (m) { pm.collectionVariables.set('caseId', m[1]); } else { next('VD - Staff token refresh'); }",
+									"pm.collectionVariables.set('caseEmailBody', j.body || '');",
+									"}"
+								]
+							}
+						}
+					]
+				},
+				{
+					"name": "VD - My cases include the new case",
+					"request": {
+						"method": "GET",
+						"header": [
+							{
+								"key": "X-Test-Partition",
+								"value": "{{partition}}"
+							},
+							{
+								"key": "X-Correlation-Id",
+								"value": "{{runId}}-{{$randomUUID}}"
+							}
+						],
+						"url": "{{vdBase}}/v1/cases"
+					},
+					"event": [
+						{
+							"listen": "test",
+							"script": {
+								"type": "text/javascript",
+								"exec": [
+									"const j = pm.response.json();",
+									"const caseId = pm.collectionVariables.get('caseId');",
+									"const c = (j.cases || []).find(c => c.caseId === caseId);",
+									"pm.test('Case is linked to the customer', () => {",
+									"    pm.response.to.have.status(200);",
+									"    pm.expect(c, `caseId ${caseId} in /v1/cases`).to.exist;",
+									"    pm.expect(c.subject).to.include(pm.collectionVariables.get('orderNumber'));",
+									"    pm.expect(['OPEN', 'AWAITING_CUSTOMER']).to.include(c.status);",
+									"});"
+								]
+							}
+						}
+					]
+				},
+				{
+					"name": "VD - Case detail carries the gate code",
+					"request": {
+						"method": "GET",
+						"header": [
+							{
+								"key": "X-Test-Partition",
+								"value": "{{partition}}"
+							},
+							{
+								"key": "X-Correlation-Id",
+								"value": "{{runId}}-{{$randomUUID}}"
+							}
+						],
+						"url": "{{vdBase}}/v1/cases/{{caseId}}"
+					},
+					"event": [
+						{
+							"listen": "test",
+							"script": {
+								"type": "text/javascript",
+								"exec": [
+									"const j = pm.response.json();",
+									"const gate = pm.collectionVariables.get('gateCode');",
+									"pm.test('200 and it is our case', () => {",
+									"    pm.response.to.have.status(200);",
+									"    pm.expect(j.caseId).to.eql(pm.collectionVariables.get('caseId'));",
+									"});",
+									"pm.test('Conversation contains the emailed gate code', () => {",
+									"    pm.expect(JSON.stringify(j)).to.include(gate);",
+									"});",
+									"pm.test('Raised by the new customer by email', () => {",
+									"    pm.expect(JSON.stringify(j).toLowerCase()).to.include(pm.collectionVariables.get('email'));",
+									"});"
+								]
+							}
+						}
+					]
+				}
+			],
+			"description": "Sends a real email from the new customer's @testdata.help address to the store's support address via mail/send, then waits for the store's case email ([C-yymmdd-XXXXX] in the subject)."
+		},
+		{
+			"name": "5 Staff view (Sally)",
+			"item": [
+				{
+					"name": "VD - Staff token refresh",
+					"request": {
+						"method": "POST",
+						"header": [
+							{
+								"key": "X-Test-Partition",
+								"value": "{{partition}}"
+							},
+							{
+								"key": "X-Correlation-Id",
+								"value": "{{runId}}-{{$randomUUID}}"
+							},
+							{
+								"key": "Content-Type",
+								"value": "application/json"
+							}
+						],
+						"url": "{{vdBase}}/v1/staff/token/refresh",
+						"body": {
+							"mode": "raw",
+							"raw": "{\n  \"refreshToken\": \"{{staffRefreshToken}}\"\n}",
+							"options": {
+								"raw": {
+									"language": "json"
+								}
+							}
+						},
+						"auth": {
+							"type": "noauth"
+						}
+					},
+					"event": [
+						{
+							"listen": "test",
+							"script": {
+								"type": "text/javascript",
+								"exec": [
+									"// Staff access tokens last 15 minutes and a run with a slow case email can take a while - rotate first",
+									"const j = pm.response.json();",
+									"pm.test('Staff tokens rotated', () => {",
+									"    pm.response.to.have.status(200);",
+									"    pm.expect(j.accessToken).to.be.a('string').and.not.empty;",
+									"});",
+									"if (j.accessToken) pm.collectionVariables.set('staffAccessToken', j.accessToken);",
+									"if (j.refreshToken) pm.collectionVariables.set('staffRefreshToken', j.refreshToken);"
+								]
+							}
+						}
+					]
+				},
+				{
+					"name": "VD - Staff sees the new customer",
+					"request": {
+						"method": "GET",
+						"header": [
+							{
+								"key": "X-Test-Partition",
+								"value": "{{partition}}"
+							},
+							{
+								"key": "X-Correlation-Id",
+								"value": "{{runId}}-{{$randomUUID}}"
+							},
+							{
+								"key": "Authorization",
+								"value": "Bearer {{staffAccessToken}}"
+							}
+						],
+						"url": "{{vdBase}}/v1/staff/customers?q={{email}}",
+						"auth": {
+							"type": "noauth"
+						}
+					},
+					"event": [
+						{
+							"listen": "test",
+							"script": {
+								"type": "text/javascript",
+								"exec": [
+									"const text = JSON.stringify(pm.response.json());",
+									"pm.test('New customer is in the staff view', () => {",
+									"    pm.response.to.have.status(200);",
+									"    pm.expect(text.toLowerCase(), 'customer email in /v1/staff/customers').to.include(pm.collectionVariables.get('email'));",
+									"    pm.expect(text).to.include(pm.collectionVariables.get('userId'));",
+									"});"
+								]
+							}
+						}
+					]
+				},
+				{
+					"name": "VD - Staff customer detail",
+					"request": {
+						"method": "GET",
+						"header": [
+							{
+								"key": "X-Test-Partition",
+								"value": "{{partition}}"
+							},
+							{
+								"key": "X-Correlation-Id",
+								"value": "{{runId}}-{{$randomUUID}}"
+							},
+							{
+								"key": "Authorization",
+								"value": "Bearer {{staffAccessToken}}"
+							}
+						],
+						"url": "{{vdBase}}/v1/staff/customers/{{userId}}",
+						"auth": {
+							"type": "noauth"
+						}
+					},
+					"event": [
+						{
+							"listen": "test",
+							"script": {
+								"type": "text/javascript",
+								"exec": [
+									"const text = JSON.stringify(pm.response.json());",
+									"pm.test('Customer detail shows the order and delivery suburb', () => {",
+									"    pm.response.to.have.status(200);",
+									"    pm.expect(text).to.include(pm.collectionVariables.get('orderNumber'));",
+									"    pm.expect(text).to.include(pm.collectionVariables.get('addrSuburb').toUpperCase());",
+									"});"
+								]
+							}
+						}
+					]
+				},
+				{
+					"name": "VD - Staff sees the order",
+					"request": {
+						"method": "GET",
+						"header": [
+							{
+								"key": "X-Test-Partition",
+								"value": "{{partition}}"
+							},
+							{
+								"key": "X-Correlation-Id",
+								"value": "{{runId}}-{{$randomUUID}}"
+							},
+							{
+								"key": "Authorization",
+								"value": "Bearer {{staffAccessToken}}"
+							}
+						],
+						"url": "{{vdBase}}/v1/staff/orders?q={{orderNumber}}",
+						"auth": {
+							"type": "noauth"
+						}
+					},
+					"event": [
+						{
+							"listen": "test",
+							"script": {
+								"type": "text/javascript",
+								"exec": [
+									"const text = JSON.stringify(pm.response.json());",
+									"pm.test('Order is in the staff orders view', () => {",
+									"    pm.response.to.have.status(200);",
+									"    pm.expect(text).to.include(pm.collectionVariables.get('orderNumber'));",
+									"});",
+									"pm.test('Card token is never shown to staff', () => pm.expect(text).to.not.match(/tok_[a-z0-9]+/));"
+								]
+							}
+						}
+					]
+				},
+				{
+					"name": "VD - Staff sees the case",
+					"request": {
+						"method": "GET",
+						"header": [
+							{
+								"key": "X-Test-Partition",
+								"value": "{{partition}}"
+							},
+							{
+								"key": "X-Correlation-Id",
+								"value": "{{runId}}-{{$randomUUID}}"
+							},
+							{
+								"key": "Authorization",
+								"value": "Bearer {{staffAccessToken}}"
+							}
+						],
+						"url": "{{vdBase}}/v1/staff/cases?q={{caseId}}",
+						"auth": {
+							"type": "noauth"
+						}
+					},
+					"event": [
+						{
+							"listen": "prerequest",
+							"script": {
+								"type": "text/javascript",
+								"exec": [
+									"// No case (e.g. the support email was refused) - nothing to look for",
+									"if (!pm.collectionVariables.get('caseId')) {",
+									"    ((pm.execution && pm.execution.skipRequest) ? () => pm.execution.skipRequest() : () => {})();",
+									"}"
+								]
+							}
+						},
+						{
+							"listen": "test",
+							"script": {
+								"type": "text/javascript",
+								"exec": [
+									"const text = JSON.stringify(pm.response.json());",
+									"if (pm.collectionVariables.get('caseId')) pm.test('Case is in the staff cases view', () => {",
+									"    pm.response.to.have.status(200);",
+									"    pm.expect(text).to.include(pm.collectionVariables.get('caseId'));",
+									"});"
+								]
+							}
+						}
+					]
+				}
+			],
+			"description": "Confirms the customer, order and case created by this run are visible to the staff user signed in at the start."
+		},
+		{
+			"name": "6 Bank account, register cleanup, sign out",
+			"item": [
+				{
+					"name": "TD - Bank the account",
+					"request": {
+						"method": "GET",
+						"header": [],
+						"url": "{{tdBase}}/lists/push?key={{userPoolKey}}&user={{email}}&password={{password}}&totpKey={{totpKey}}&userId={{userId}}&orderId={{orderId}}&runId={{runId}}",
+						"auth": {
+							"type": "noauth"
+						}
+					},
+					"event": [
+						{
+							"listen": "test",
+							"script": {
+								"type": "text/javascript",
+								"exec": [
+									"pm.test('Account banked for reuse', () => pm.response.to.have.status(200));"
+								]
+							}
+						}
+					]
+				},
+				{
+					"name": "TD - Register order for cleanup",
+					"request": {
+						"method": "GET",
+						"header": [],
+						"url": "{{tdBase}}/lists/cleanup/push?key={{cleanupKey}}&value={{orderId}}&note={{email}}%20{{orderNumber}}%20{{caseId}}%20{{chatCaseId}}",
+						"auth": {
+							"type": "noauth"
+						}
+					},
+					"event": [
+						{
+							"listen": "test",
+							"script": {
+								"type": "text/javascript",
+								"exec": [
+									"pm.test('Cleanup record saved', () => pm.response.to.have.status(200));"
+								]
+							}
+						}
+					]
+				},
+				{
+					"name": "VD - Logout",
+					"request": {
+						"method": "POST",
+						"header": [
+							{
+								"key": "X-Test-Partition",
+								"value": "{{partition}}"
+							},
+							{
+								"key": "X-Correlation-Id",
+								"value": "{{runId}}-{{$randomUUID}}"
+							}
+						],
+						"url": "{{vdBase}}/v1/auth/logout"
+					},
+					"event": [
+						{
+							"listen": "test",
+							"script": {
+								"type": "text/javascript",
+								"exec": [
+									"pm.test('Signed out', () => pm.expect(pm.response.code).to.be.oneOf([200, 204]));",
+									"console.log(`DONE ${pm.collectionVariables.get('runId')}: ${pm.collectionVariables.get('email')} order ${pm.collectionVariables.get('orderNumber')} delivery ${pm.collectionVariables.get('deliveryDate')} ${pm.collectionVariables.get('deliveryWindow')} case ${pm.collectionVariables.get('caseId')} gate ${pm.collectionVariables.get('gateCode')}`);"
+								]
+							}
+						}
+					]
+				},
+				{
+					"name": "VD - Staff logout",
+					"request": {
+						"method": "POST",
+						"header": [
+							{
+								"key": "X-Test-Partition",
+								"value": "{{partition}}"
+							},
+							{
+								"key": "X-Correlation-Id",
+								"value": "{{runId}}-{{$randomUUID}}"
+							},
+							{
+								"key": "Authorization",
+								"value": "Bearer {{staffAccessToken}}"
+							}
+						],
+						"url": "{{vdBase}}/v1/staff/logout",
+						"auth": {
+							"type": "noauth"
+						}
+					},
+					"event": [
+						{
+							"listen": "test",
+							"script": {
+								"type": "text/javascript",
+								"exec": [
+									"pm.test('Staff signed out', () => pm.expect(pm.response.code).to.be.oneOf([200, 204]));"
+								]
+							}
+						}
+					]
+				}
+			]
+		}
+	],
+	"variable": [
+		{
+			"key": "vdBase",
+			"value": "https://api.verdant-v1.testthis.now",
+			"description": "Verdant Dock API (shop UI: https://shop.verdant-v1.testthis.now)"
+		},
+		{
+			"key": "tdBase",
+			"value": "https://api.testdata.help/v1",
+			"description": "Test Helper API v1 base URL (https://api.testdata.help/v1/llms.txt)"
+		},
+		{
+			"key": "mailDomain",
+			"value": "testdata.help",
+			"type": "string"
+		},
+		{
+			"key": "supportAddress",
+			"value": "support-v1@testthis.now",
+			"description": "From GET /v1/support"
+		},
+		{
+			"key": "partition",
+			"value": "vd-e2e",
+			"description": "X-Test-Partition tag"
+		},
+		{
+			"key": "emailPrefix",
+			"value": "vd",
+			"description": "Local-part prefix for generated @{{mailDomain}} customers"
+		},
+		{
+			"key": "mobile",
+			"value": "0491 570 156",
+			"description": "ACMA fictional-use mobile range"
+		},
+		{
+			"key": "sku",
+			"value": "VD-AP-S",
+			"description": "Item to order (AutoPlanter Small - needs no other item)"
+		},
+		{
+			"key": "testCardNumber",
+			"value": "4111 1111 1111 1111",
+			"description": "Mock gateway: any Luhn-valid Visa/MC"
+		},
+		{
+			"key": "testCardCvv",
+			"value": "123",
+			"description": "Last digit 0 = declined; anything else approved"
+		},
+		{
+			"key": "caseEmailMaxTries",
+			"value": "6",
+			"description": "x 20 s waits for the case email"
+		},
+		{
+			"key": "userPoolKey",
+			"value": "VD_USERPOOL",
+			"description": "/data key for banked accounts"
+		},
+		{
+			"key": "cleanupKey",
+			"value": "VD_CLEANUP",
+			"description": "/data cleanup register key"
+		},
+		{
+			"key": "chatQuestions",
+			"value": "[\"When is my delivery?\", \"Can I still cancel my order?\", \"Our front gate has a security keypad. Can the driver use code {{gateCode}}?\"]",
+			"description": "Questions asked in one chat, in order (JSON array; {{gateCode}} is substituted)"
+		},
+		{
+			"key": "staffEmail",
+			"value": "sally.staff@verdant-v1.testthis.now",
+			"description": "Staff user signed in first so this run's IP is in her view"
+		},
+		{
+			"key": "staffPassword",
+			"value": "SallyStaff4Testing!",
+			"description": "Staff password (consider moving to an environment / Postman Vault)"
+		},
+		{
+			"key": "staffTotpSecret",
+			"value": "GPYF J7IY ILAQ GKV3 PM6G NLUR QGU5 RJ5I",
+			"description": "Staff TOTP secret as shown by the authenticator; spaces are stripped"
+		},
+		{
+			"key": "staffTotpKey",
+			"value": "automation",
+			"description": "/totp namespace holding the staff secret"
+		},
+		{
+			"key": "chatMode",
+			"value": ""
+		},
+		{
+			"key": "chatHistory",
+			"value": ""
+		},
+		{
+			"key": "chatConversationId",
+			"value": ""
+		},
+		{
+			"key": "chatTurn",
+			"value": ""
+		},
+		{
+			"key": "chatBody",
+			"value": ""
+		},
+		{
+			"key": "chatLastQuestion",
+			"value": ""
+		},
+		{
+			"key": "chatFirstReply",
+			"value": ""
+		},
+		{
+			"key": "chatCaseId",
+			"value": ""
+		},
+		{
+			"key": "staffTotpSecretCompact",
+			"value": ""
+		},
+		{
+			"key": "staffMfaTries",
+			"value": ""
+		},
+		{
+			"key": "staffPreferNext",
+			"value": ""
+		},
+		{
+			"key": "staffMfaToken",
+			"value": ""
+		},
+		{
+			"key": "staffTotpCode",
+			"value": ""
+		},
+		{
+			"key": "staffAccessToken",
+			"value": ""
+		},
+		{
+			"key": "staffRefreshToken",
+			"value": ""
+		},
+		{
+			"key": "runId",
+			"value": ""
+		},
+		{
+			"key": "totpKey",
+			"value": ""
+		},
+		{
+			"key": "email",
+			"value": ""
+		},
+		{
+			"key": "password",
+			"value": ""
+		},
+		{
+			"key": "gateCode",
+			"value": ""
+		},
+		{
+			"key": "addrLine1",
+			"value": ""
+		},
+		{
+			"key": "addrSuburb",
+			"value": ""
+		},
+		{
+			"key": "addrPostcode",
+			"value": ""
+		},
+		{
+			"key": "givenName",
+			"value": ""
+		},
+		{
+			"key": "familyName",
+			"value": ""
+		},
+		{
+			"key": "verifyCode",
+			"value": ""
+		},
+		{
+			"key": "enrolmentToken",
+			"value": ""
+		},
+		{
+			"key": "totpSecret",
+			"value": ""
+		},
+		{
+			"key": "totpCode",
+			"value": ""
+		},
+		{
+			"key": "lastTotpUsed",
+			"value": ""
+		},
+		{
+			"key": "userId",
+			"value": ""
+		},
+		{
+			"key": "recoveryCode1",
+			"value": ""
+		},
+		{
+			"key": "mfaToken",
+			"value": ""
+		},
+		{
+			"key": "accessToken",
+			"value": ""
+		},
+		{
+			"key": "refreshToken",
+			"value": ""
+		},
+		{
+			"key": "unitPriceCents",
+			"value": ""
+		},
+		{
+			"key": "addressId",
+			"value": ""
+		},
+		{
+			"key": "cartVersion",
+			"value": ""
+		},
+		{
+			"key": "expectedTotalCents",
+			"value": ""
+		},
+		{
+			"key": "windowsAllowed",
+			"value": ""
+		},
+		{
+			"key": "deliveryDate",
+			"value": ""
+		},
+		{
+			"key": "deliveryWindow",
+			"value": ""
+		},
+		{
+			"key": "orderId",
+			"value": ""
+		},
+		{
+			"key": "orderNumber",
+			"value": ""
+		},
+		{
+			"key": "emailSentUtc",
+			"value": ""
+		},
+		{
+			"key": "caseId",
+			"value": ""
+		},
+		{
+			"key": "caseEmailBody",
+			"value": ""
+		},
+		{
+			"key": "popTries",
+			"value": ""
+		}
+	]
+}

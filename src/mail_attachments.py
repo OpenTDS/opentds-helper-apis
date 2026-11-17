@@ -1,0 +1,795 @@
+"""mail/attachments/* - saved-attachment store, received-attachment access,
+text search inside attachments, and the browser uploader.
+
+Identifiers:
+  key  caller-chosen name in the SAVED store (ATTACHMENT_BUCKET, S3 key = key,
+       no expiry). Doubles as the default filename when sent.
+  ref  opaque token from mail/pop for a RECEIVED attachment (INBOUND_BUCKET,
+       attachments/<ref>, 7-day expiry).
+"""
+import base64
+import difflib
+import hashlib
+import json
+import mimetypes
+import re
+
+from common import ApiError, b64decode, base_url, raw, respond
+import mail_extract as mx
+import mail_pdf
+import mail_store
+
+# ---- size caps -------------------------------------------------
+# Two different ceilings, because there are two different routes in.
+#
+# MAX_SAVED_KB applies ONLY to the base64-body route (POST
+# attachments/save with the content in the request body). That body crosses
+# API Gateway (10 MB hard) and a synchronous Lambda invoke (6 MB hard,
+# non-adjustable), and base64 costs x4/3, so ~4.4 MB raw is the real
+# platform ceiling. 4096 KB keeps a clean 400 in front of it instead of an
+# opaque 413 from the platform.
+#
+# MAX_UPLOAD_KB applies to the presigned-POST route (attachments/upload/url),
+# where the bytes go browser -> S3 and never touch API Gateway or Lambda at
+# all. A single S3 POST goes to 5 GB, so this is a policy number.
+#
+# It is deliberately NOT the same as the send-side cap. Most things in this
+# store are never emailed - they are fixtures for attachments/find and
+# attachments/get - so the store is sized for those. What CAN be emailed is
+# capped separately in mail_send (MAX_ATTACH_KB), because SESv2 stops at
+# 40 MB after base64 and real recipients stop a good deal earlier.
+MAX_SAVED_KB = 4096
+MAX_UPLOAD_KB = 102400
+# Text extraction reads the whole object into memory and is CPU-bound and
+# single-threaded, against a 29 s API Gateway ceiling. Guard it explicitly so
+# an oversized fixture returns a clear 400 rather than an opaque 504 or an
+# out-of-memory kill.
+MAX_SEARCH_KB = 20480
+# Above this, attachments/get hands back a presigned GET URL instead of
+# inlining base64 -- a Lambda proxy RESPONSE is capped at 6 MB too.
+MAX_INLINE_KB = 4096
+FIND_LIMIT_DEFAULT = 20
+
+
+def _one_of_key_ref(req, prefix=''):
+    """(key, ref) with exactly one set. prefix='other' reads otherkey / otherref."""
+    k, r = prefix + 'key', prefix + 'ref'
+    key = req.key(k, required=False)
+    ref = req.text(r)
+    if key and ref:
+        raise ApiError(400, f"Pass '{k}' (saved attachment) or '{r}' (received attachment), not both.")
+    if not key and not ref:
+        raise ApiError(400, f"Identify the attachment with '{k}' (saved attachment) or "
+                            f"'{r}' (received attachment, from mail/pop).")
+    if ref:
+        mail_store.check_ref(ref)
+    return key, ref
+
+
+# --------------------------------------------------------------- save ----
+def _filename(req):
+    """Optional 'filename' -> (safe name, content type) or (None, None).
+    Same rule as received attachments: letters, digits, '.', '_', '-' kept,
+    anything else becomes '_' (S3 metadata is ASCII-only). The extension is
+    the caller's business - it decides the content type the file is served
+    with, so name a PDF 'something.pdf'."""
+    name = req.text('filename')
+    if not name:
+        return None, None
+    if len(name) > 255:
+        raise ApiError(400, "'filename' must be 255 characters or fewer.")
+    safe = re.sub(r'[^A-Za-z0-9._-]', '_', name.replace('\\', '/').rsplit('/', 1)[-1]).lstrip('._-')
+    if not safe:
+        raise ApiError(400, "'filename' has no usable characters.", received=name)
+    return safe, mimetypes.guess_type(safe)[0] or 'application/octet-stream'
+
+
+def save(req):
+    key = req.key('key')
+    ref = req.text('ref')
+    fname, ftype = _filename(req)
+    s3 = mail_store.s3()
+    bucket = mail_store.attachment_bucket()
+    if ref:
+        # Promote: copy a received attachment from the temporary inbound store
+        # into the saved store under 'key'. S3-to-S3 via copy_object, so the
+        # bytes stay server-side: nothing crosses the Lambda payload limit and
+        # a full-size inbound attachment (SES receives up to 40 MB) promotes
+        # fine. MAX_SAVED_KB deliberately does NOT apply here - it is a limit
+        # of the base64-body route, not of the store.
+        tkey = mail_store.received_key(ref)
+        head = mail_store.head(mail_store.inbound_bucket(), tkey)
+        if head is None:
+            raise mail_store.ref_not_found(ref)
+        size = head['ContentLength']
+        if size > MAX_UPLOAD_KB * 1024:
+            raise ApiError(400, 'Attachment exceeds the store cap.',
+                           maxKb=MAX_UPLOAD_KB, bytes=size)
+        copy = {'Bucket': bucket, 'Key': key,
+                'CopySource': {'Bucket': mail_store.inbound_bucket(), 'Key': tkey}}
+        if fname:   # rename while promoting
+            copy.update(MetadataDirective='REPLACE', Metadata={'filename': fname},
+                        ContentType=ftype)
+        else:
+            copy['MetadataDirective'] = 'COPY'
+        s3.copy_object(**copy)
+        return respond(200, {'result': 'saved', 'key': key, 'bytes': size,
+                             'filename': fname or (head.get('Metadata') or {}).get('filename', ''),
+                             'contentType': ftype if fname else (head.get('ContentType') or 'application/octet-stream'),
+                             'source': 'received', 'ref': ref})
+
+    if req.method != 'POST':
+        raise ApiError(400, "POST the file as the request body (raw bytes with Content-Type: "
+                            "application/octet-stream, or base64 text), or pass 'ref' to save a "
+                            "received attachment.")
+    ctype_in = (req.headers.get('content-type') or '').split(';')[0].strip().lower()
+    if ctype_in == 'application/octet-stream':
+        # Raw bytes. API Gateway delivers this media type base64-encoded and
+        # body_bytes() undoes that, so this is the file exactly as sent.
+        data = req.body_bytes()
+        if not data:
+            raise ApiError(400, 'Request body is empty.')
+        body_format = 'binary'
+    else:
+        body = req.body_bytes().decode('ascii', 'replace')
+        body = ''.join(body.split())
+        if not body:
+            raise ApiError(400, 'Request body must be the file: raw bytes with Content-Type: '
+                                'application/octet-stream, or the base64 of the file.')
+        if body.startswith('%PDF') or not re.fullmatch(r'[A-Za-z0-9+/=_-]+', body):
+            raise ApiError(400, 'The body is not base64. To send the raw file, set Content-Type: '
+                                'application/octet-stream; otherwise send the base64 of the file.',
+                           received=ctype_in or None)
+        data = b64decode(body)
+        if not data:
+            raise ApiError(400, 'Attachment content is empty after base64 decode.')
+        body_format = 'base64'
+    if len(data) > MAX_SAVED_KB * 1024:
+        raise ApiError(400, 'Attachment exceeds the cap for the request-body route; use '
+                            'mail/attachments/upload/url for larger files.',
+                       maxKb=MAX_SAVED_KB, bytes=len(data))
+    put = {'Bucket': bucket, 'Key': key, 'Body': data}
+    if fname:
+        put.update(Metadata={'filename': fname}, ContentType=ftype)
+    s3.put_object(**put)
+    out = {'result': 'saved', 'key': key, 'bytes': len(data), 'filename': fname or key,
+           'contentType': ftype or 'application/octet-stream', 'source': 'upload',
+           'bodyFormat': body_format, 'sha256': hashlib.sha256(data).hexdigest()}
+    if not fname:
+        out['hint'] = ("no 'filename' given, so the file is named after its key and served as "
+                       "application/octet-stream; pass filename=invoice.pdf (with its extension)")
+    return respond(200, out)
+
+
+# ---------------------------------------------------------------- get ----
+MAX_UNLOCK_KB = 10240    # pure-Python AES runs ~0.6 MB/s in Lambda; this stays inside UNLOCK_TIMEOUT_S
+UNLOCK_TIMEOUT_S = 20.0
+UNLOCKED_PREFIX = '_unlocked/'     # cannot clash with a saved key (keys start with a letter, digit or +)
+
+
+def _unlock(req, bucket, s3key, size, fname):
+    """password / password64 given: an unprotected copy of the PDF, stored in
+    the attachment bucket under _unlocked/ (expires after a day) so it can be
+    served like any other file. -> (s3key, bytes) of the copy, or None when the
+    file is not encrypted (the password is not needed)."""
+    password = _txt(req, 'password')
+    if password is None:
+        return None
+    if size > MAX_UNLOCK_KB * 1024:
+        raise ApiError(400, 'File too large to unlock.', maxKb=MAX_UNLOCK_KB, bytes=size)
+    data = mail_store.s3().get_object(Bucket=bucket, Key=s3key)['Body'].read()
+    if b'%PDF' not in data[:1024]:
+        raise ApiError(400, "'password' applies to PDF files only.", filename=fname)
+    extra = {'encrypted': True, 'filename': fname}
+    try:
+        unlocked = mx._run_guarded(UNLOCK_TIMEOUT_S, lambda: mail_pdf.unlock(data, password))
+    except mail_pdf.PasswordIncorrect:
+        raise ApiError(422, 'The password is not correct for this PDF.', passwordIncorrect=True, **extra)
+    except mail_pdf.PasswordRequired:
+        raise ApiError(422, 'This PDF is password-protected. Pass password= (or password64=).',
+                       passwordRequired=True, **extra)
+    except mail_pdf.Unsupported as exc:
+        raise ApiError(422, str(exc), unsupported=True, **extra)
+    except mx.RegexTimeout:
+        raise ApiError(400, 'Unlocking the PDF exceeded its time budget.', timeoutSeconds=UNLOCK_TIMEOUT_S,
+                       hint='fetch it without password= and open it with the password your end')
+    except mail_pdf.PdfError as exc:
+        raise ApiError(422, 'This PDF could not be unlocked: %s' % exc, unsupported=True, **extra)
+    if unlocked is None:
+        return None
+    digest = hashlib.sha256(data + b'\0' + password.encode('utf-8')).hexdigest()[:40]
+    tkey = UNLOCKED_PREFIX + digest + '.pdf'
+    if mail_store.head(mail_store.attachment_bucket(), tkey) is None:
+        mail_store.s3().put_object(Bucket=mail_store.attachment_bucket(), Key=tkey, Body=unlocked,
+                                   ContentType='application/pdf', Metadata={'filename': fname})
+    return tkey, len(unlocked)
+
+
+def get(req):
+    key, ref = _one_of_key_ref(req)
+    want_url = req.boolean('url', False)
+    # download=true / view=true: answer with a redirect to the file itself, so
+    # one browser URL saves it (download) or shows it in a tab (view).
+    download = req.boolean('download', False)
+    view = req.boolean('view', False)
+    if download and view:
+        raise ApiError(400, "Pass 'download' or 'view', not both.")
+    if key:
+        bucket, s3key = mail_store.attachment_bucket(), key
+        head = mail_store.head(bucket, s3key)
+        if head is None:
+            raise mail_store.key_not_found(key)
+        out = {'key': key, 'source': 'saved'}
+        fname = (head.get('Metadata') or {}).get('filename') or key
+    else:
+        bucket, s3key = mail_store.inbound_bucket(), mail_store.received_key(ref)
+        head = mail_store.head(bucket, s3key)
+        if head is None:
+            raise mail_store.ref_not_found(ref)
+        out = {'ref': ref, 'source': 'received'}
+        fname = (head.get('Metadata') or {}).get('filename') or ref
+    size = head['ContentLength']
+    ctype = head.get('ContentType') or 'application/octet-stream'
+    if view and ctype == 'application/octet-stream':
+        ctype = mimetypes.guess_type(fname)[0] or ctype   # so a browser opens it rather than saving it
+    unlocked = _unlock(req, bucket, s3key, size, fname)
+    if unlocked is not None:
+        # Serve the unprotected copy in place of the original, every way get serves a file.
+        out.update({'encrypted': True, 'unlocked': True, 'originalBytes': size})
+        bucket, s3key = mail_store.attachment_bucket(), unlocked[0]
+        size, ctype = unlocked[1], 'application/pdf'
+    elif _txt(req, 'password') is not None:
+        out.update({'encrypted': False, 'unlocked': False})
+    out.update({'filename': fname, 'bytes': size, 'contentType': ctype})
+    if download or view:
+        url = mail_store.presigned_get(bucket, s3key, fname,
+                                       disposition='inline' if view else 'attachment',
+                                       content_type=ctype)
+        return raw(302, '', 'text/plain; charset=utf-8', {'Location': url})
+    if want_url or size > MAX_INLINE_KB * 1024:
+        out['url'] = mail_store.presigned_get(bucket, s3key, fname)
+        out['expiresInSeconds'] = mail_store.PRESIGN_TTL
+        out['note'] = ('served as a presigned URL: a Lambda proxy response caps at 6 MB'
+                       if size > MAX_INLINE_KB * 1024 else 'url requested')
+        return respond(200, out)
+    data = mail_store.s3().get_object(Bucket=bucket, Key=s3key)['Body'].read()
+    out['data'] = base64.b64encode(data).decode('ascii')
+    return respond(200, out)
+
+
+# ------------------------------------------------------------- delete ----
+def delete(req):
+    key = req.key('key')
+    bucket = mail_store.attachment_bucket()
+    found = mail_store.head(bucket, key) is not None
+    mail_store.s3().delete_object(Bucket=bucket, Key=key)
+    # Idempotent: deleting a key that is not there is a 200 with deleted:false.
+    return respond(200, {'key': key, 'deleted': found,
+                         'comment': 'deleted' if found else 'no attachment under this key'})
+
+
+# --------------------------------------------------------------- find ----
+def _txt(req, name):
+    v, used64 = req.text_or64(name)
+    # b64decode is tolerant of padding and url-safe alphabets, so junk can
+    # decode to nothing rather than raising. Treat an empty result as the
+    # error it is, or the caller gets a misleading 'missing search term'.
+    if used64 and not v:
+        raise ApiError(400, f"'{name}64' is not valid base64 of UTF-8 text.")
+    return v
+
+
+def _load(req, prefix=''):
+    """Fetch the attachment named by key/ref. -> (ident, data, filename)."""
+    key, ref = _one_of_key_ref(req, prefix)
+    if ref:
+        data, fname, _ct = mail_store.fetch_received(ref)
+        ident = {'ref': ref, 'source': 'received'}
+    else:
+        data, fname, _ct = mail_store.fetch_saved(key)
+        ident = {'key': key, 'source': 'saved'}
+    if len(data) > MAX_SEARCH_KB * 1024:
+        raise ApiError(400, 'Attachment too large to search.',
+                       maxKb=MAX_SEARCH_KB, bytes=len(data),
+                       hint='the store accepts larger files than text extraction can finish '
+                            'inside the request timeout; fetch it with mail/attachments/get '
+                            'and search it your end')
+    return ident, data, fname
+
+
+def _extract(req, data, fname, password_param='password'):
+    """Text + metadata, honouring password / password64."""
+    password = _txt(req, password_param)
+    # Extraction runs under a wall-clock guard. Without it a pathological
+    # document produces an opaque 504 from API Gateway's 29 s limit instead
+    # of something you can act on.
+    try:
+        text, meta = mx._run_guarded(mx.EXTRACT_TIMEOUT_S,
+                                     lambda: mx.extract(data, fname, password))
+    except mx.PasswordProblem as exc:
+        extra = {'encrypted': True, 'filename': fname}
+        if exc.kind == 'required':
+            raise ApiError(422, 'This PDF is password-protected. Pass password= (or password64=).',
+                           passwordRequired=True, **extra)
+        if exc.kind == 'incorrect':
+            raise ApiError(422, 'The password is not correct for this PDF.',
+                           passwordIncorrect=True, **extra)
+        raise ApiError(422, str(exc), unsupported=True, **extra)
+    except mx.RegexTimeout:
+        raise ApiError(400, 'Text extraction exceeded its time budget for this attachment.',
+                       timeoutSeconds=mx.EXTRACT_TIMEOUT_S, filename=fname, bytes=len(data),
+                       hint='the document is unusually structured; retrying will fail the same '
+                            'way - fetch it with mail/attachments/get and search it your end')
+    except Exception as exc:     # noqa: BLE001
+        raise ApiError(500, 'Could not extract text from this attachment.',
+                       detail=str(exc), filename=fname)
+    return text, meta
+
+
+def _document(text, meta):
+    doc = {'extractor': meta.get('extractor'), 'characters': len(text)}
+    for k in ('pages', 'encrypted', 'encryption', 'passwordUsed', 'streams', 'fontMaps',
+              'mapConflicts', 'lowConfidence', 'encoding', 'xmlParts'):
+        if k in meta:
+            doc[k] = meta[k]
+    return doc
+
+
+def find(req):
+    term = _txt(req, 'text')
+    rx_src = _txt(req, 'regex')
+    lb = _txt(req, 'left')
+    rb = _txt(req, 'right')
+
+    modes = [m for m, v in (('literal', term), ('regex', rx_src), ('boundaries', lb)) if v]
+    if len(modes) > 1:
+        raise ApiError(400, 'Choose one search mode.', given=modes,
+                       hint="use 'text', OR 'regex', OR 'left' (+ optional 'right')")
+    if not modes:
+        if rb:
+            raise ApiError(400, "'right' needs a 'left' boundary.")
+        raise ApiError(400, 'Missing search term.',
+                       hint="pass 'text' / 'text64' for literal text, 'regex' / 'regex64' for a "
+                            "pattern, or 'left' (+ optional 'right') to capture between markers")
+    mode = modes[0]
+    if rb and mode != 'boundaries':
+        raise ApiError(400, "'right' is only used with 'left'.")
+    scope = (req.text('in') or 'text').lower()
+    if scope not in ('text', 'metadata', 'all'):
+        raise ApiError(400, "'in' must be text, metadata or all.", received=scope)
+
+    ctx = req.integer('context', mx.CTX_DEFAULT, lo=0, hi=mx.CTX_MAX)
+    cap = req.integer('limit', FIND_LIMIT_DEFAULT, lo=1, hi=mx.MAX_RESULTS)
+    icase = req.boolean('ignorecase', False)
+    exact = req.boolean('exact', False)
+    dotall = req.boolean('dotall', mode == 'boundaries')
+
+    ident, data, fname = _load(req)
+    text, meta = _extract(req, data, fname)
+    meta_text = mx.metadata_text(meta.get('info') or {})
+    if scope == 'metadata':
+        hay, hay_meta = meta_text, {}
+    elif scope == 'all':
+        hay = text + ('\n\n' + meta_text if meta_text else '')
+        hay_meta = dict(meta)
+    else:
+        hay, hay_meta = text, meta
+
+    if mode == 'literal':
+        pattern = mx.flex(term, exact)
+        match = {'mode': 'literal', 'text': term, 'exact': exact, 'ignoreCase': icase,
+                 'context': ctx}
+    elif mode == 'boundaries':
+        pattern = mx.boundary_pattern(lb, rb, exact)
+        match = {'mode': 'boundaries', 'left': lb, 'right': rb or None, 'exact': exact,
+                 'ignoreCase': icase, 'dotAll': dotall, 'context': ctx}
+    else:
+        pattern = rx_src
+        match = {'mode': 'regex', 'regex': rx_src, 'ignoreCase': icase, 'dotAll': dotall,
+                 'context': ctx}
+    if len(pattern) > mx.REGEX_MAX_LEN:
+        raise ApiError(400, 'Pattern too long.', maxChars=mx.REGEX_MAX_LEN)
+    match['in'] = scope
+    try:
+        count, results, truncated, empty = mx.find_regex(
+            hay, pattern, ctx=ctx, ignorecase=icase, dotall=dotall and mode != 'literal',
+            maxresults=cap, kind=mode, meta=hay_meta)
+    except re.error as exc:
+        raise ApiError(400, 'Invalid regular expression.', detail=str(exc), pattern=pattern)
+    except mx.RegexTimeout:
+        raise ApiError(400, 'Pattern took too long to evaluate and was abandoned.',
+                       timeoutSeconds=mx.REGEX_TIMEOUT_S, pattern=pattern,
+                       hint='nested quantifiers such as (a+)+ backtrack catastrophically; '
+                            'anchor the pattern or use left/right boundaries instead')
+    if mode == 'regex':
+        match['pattern'] = pattern
+
+    out = dict(ident)
+    out.update({'filename': fname, 'bytes': len(data), 'match': match,
+                'document': _document(text, meta), 'count': count, 'truncated': truncated,
+                'results': results})
+    if mode != 'literal':
+        # Flat list of captures - the thing you feed straight into lists/push
+        # or an assertion, without walking results.
+        out['values'] = [r['value'] for r in results]
+    if mode == 'boundaries' and empty:
+        out['emptyMatches'] = empty
+    if count == 0:
+        hints = []
+        if not icase:
+            try:
+                c2 = mx.find_regex(hay, pattern, ignorecase=True, dotall=dotall and mode != 'literal',
+                                   maxresults=1, kind=mode, meta=hay_meta)[0]
+            except Exception:  # noqa: BLE001
+                c2 = 0
+            if c2:
+                out['caseInsensitiveCount'] = c2
+                hints.append('matches when ignorecase=true')
+        if scope == 'text' and meta_text:
+            hints.append('the document properties are searched with in=metadata or in=all')
+        hints.append('see exactly what is searchable with mail/attachments/text')
+        out['hint'] = '; '.join(hints)
+    return respond(200, out)
+
+
+TEXT_MAX_CHARS = 1000000
+
+
+def text(req):
+    """The extracted text, page by page, plus the document properties."""
+    ident, data, fname = _load(req)
+    body, meta = _extract(req, data, fname)
+    offs = meta.get('pageOffsets') or [0]
+    pages = []
+    for i, start in enumerate(offs):
+        end = offs[i + 1] - 2 if i + 1 < len(offs) else len(body)
+        pages.append({'page': i + 1 if meta.get('pages') is not None else None,
+                      'text': body[start:end]})
+    want = req.integer('page', None)
+    if want is not None:
+        if meta.get('pages') is None or not 1 <= want <= len(pages):
+            raise ApiError(404, 'No such page.', page=want, pages=meta.get('pages'))
+        pages = [pages[want - 1]]
+    fmt = (req.text('format') or 'json').lower()
+    if fmt not in ('json', 'text'):
+        raise ApiError(400, "'format' must be json or text.", received=fmt)
+    if fmt == 'text':
+        if len(pages) == 1:
+            out = pages[0]['text']
+        else:
+            out = '\n\n'.join('--- page %s ---\n%s' % (p['page'], p['text']) for p in pages)
+        return raw(200, out[:TEXT_MAX_CHARS], 'text/plain; charset=utf-8')
+    total, truncated = 0, False
+    for p in pages:
+        room = TEXT_MAX_CHARS - total
+        if len(p['text']) > room:
+            p['text'] = p['text'][:max(0, room)]
+            truncated = True
+        total += len(p['text'])
+    out = dict(ident)
+    out.update({'filename': fname, 'bytes': len(data), 'document': _document(body, meta),
+                'metadata': meta.get('info') or {}, 'pages': pages, 'truncated': truncated})
+    return respond(200, out)
+
+
+# ------------------------------------------------------------ compare ----
+COMPARE_MAX_DIFFS = 50
+
+
+def _norm_lines(body, meta):
+    """[(page, line)] with whitespace runs collapsed and blank lines dropped,
+    so a different column gap or line ending is not a difference."""
+    offs = meta.get('pageOffsets') or [0]
+    out = []
+    for i, start in enumerate(offs):
+        end = offs[i + 1] if i + 1 < len(offs) else len(body)
+        page = i + 1 if meta.get('pages') is not None else None
+        for line in body[start:end].splitlines():
+            n = ' '.join(line.split())
+            if n:
+                out.append((page, n))
+    return out
+
+
+def _summary(ident, data, fname, body, meta):
+    out = dict(ident)
+    out.update({'filename': fname, 'bytes': len(data), 'sha256': hashlib.sha256(data).hexdigest(),
+                'pages': meta.get('pages'), 'characters': len(body),
+                'encrypted': meta.get('encrypted', False)})
+    return out
+
+
+def compare(req):
+    """Are two attachments the same document? Bytes, text and properties."""
+    ident_a, data_a, name_a = _load(req)
+    ident_b, data_b, name_b = _load(req, 'other')
+    body_a, meta_a = _extract(req, data_a, name_a)
+    other_pw = 'otherpassword' if (req.get('otherpassword') or req.get('otherpassword64')) else 'password'
+    body_b, meta_b = _extract(req, data_b, name_b, other_pw)
+
+    same_bytes = data_a == data_b
+    la, lb = _norm_lines(body_a, meta_a), _norm_lines(body_b, meta_b)
+    ta, tb = [t for _p, t in la], [t for _p, t in lb]
+    same_text = ta == tb
+
+    diffs = []
+    if not same_text:
+        sm = difflib.SequenceMatcher(None, ta, tb, autojunk=False)
+        for op, i1, i2, j1, j2 in sm.get_opcodes():
+            if op == 'equal':
+                continue
+            diffs.append({
+                'change': {'replace': 'changed', 'delete': 'onlyInFirst', 'insert': 'onlyInSecond'}[op],
+                'firstPage': la[i1][0] if i1 < i2 else None,
+                'secondPage': lb[j1][0] if j1 < j2 else None,
+                'first': ta[i1:i2], 'second': tb[j1:j2]})
+
+    info_a, info_b = meta_a.get('info') or {}, meta_b.get('info') or {}
+    prop_diffs = {k: {'first': info_a.get(k), 'second': info_b.get(k)}
+                  for k in sorted(set(info_a) | set(info_b)) if info_a.get(k) != info_b.get(k)}
+
+    if same_bytes:
+        verdict = 'identical: the two files are byte-for-byte the same'
+    elif same_text:
+        verdict = ('same content: the text is identical but the files differ byte-for-byte '
+                   '(normal for a PDF generated twice - creation date and internal IDs change)')
+    else:
+        verdict = 'different: the text differs - see differences'
+
+    return respond(200, {
+        'same': same_text,
+        'sameBytes': same_bytes,
+        'sameText': same_text,
+        'sameProperties': not prop_diffs,
+        'verdict': verdict,
+        'first': _summary(ident_a, data_a, name_a, body_a, meta_a),
+        'second': _summary(ident_b, data_b, name_b, body_b, meta_b),
+        'lines': {'first': len(ta), 'second': len(tb)},
+        'differenceCount': len(diffs),
+        'differences': diffs[:COMPARE_MAX_DIFFS],
+        'truncated': len(diffs) > COMPARE_MAX_DIFFS,
+        'propertyDifferences': prop_diffs,
+    })
+
+
+# ------------------------------------------------------------- upload ----
+def upload_url(req):
+    # Presigned POST. The browser sends the raw file straight to S3, so the
+    # bytes never cross API Gateway (10 MB) or a synchronous Lambda invoke
+    # (6 MB) and there is no base64 inflation. The cap rides in the policy as
+    # content-length-range, which S3 itself enforces - so it holds even if the
+    # caller lies about 'size', and the URL is never an unbounded write into
+    # the bucket.
+    key = req.key('key')
+    fname, ftype = _filename(req)
+    declared = req.integer('size', 0, lo=0, clamp=True)
+    if declared > MAX_UPLOAD_KB * 1024:
+        raise ApiError(400, 'File exceeds the upload cap.', maxKb=MAX_UPLOAD_KB, bytes=declared)
+    fields = {'success_action_status': '201'}
+    if fname:
+        # The name and type ride in the signed policy, so S3 stores them with
+        # the object exactly as a POST to attachments/save would.
+        fields.update({'x-amz-meta-filename': fname, 'Content-Type': ftype})
+    ps = mail_store.s3().generate_presigned_post(
+        Bucket=mail_store.attachment_bucket(), Key=key,
+        Fields=fields,
+        Conditions=[{k: v} for k, v in fields.items()] +
+                   [['content-length-range', 1, MAX_UPLOAD_KB * 1024]],
+        ExpiresIn=mail_store.PRESIGN_TTL)
+    return respond(200, {'key': key, 'filename': fname or key, 'url': ps['url'],
+                         'fields': ps['fields'], 'method': 'POST', 'maxKb': MAX_UPLOAD_KB,
+                         'expiresInSeconds': mail_store.PRESIGN_TTL})
+
+
+def upload_page(req):
+    base = base_url(req.event)
+    html = (PAGE_HTML.replace('__MAXKB__', str(MAX_UPLOAD_KB))
+                     .replace('__BASE_JSON__', _js_string(base)))
+    return raw(200, html, 'text/html; charset=utf-8')
+
+
+def _js_string(s):
+    # Safe inside a <script> block: json quoting plus '</' broken up.
+    return json.dumps(s).replace('</', '<\\/')
+
+
+# Self-contained drag & drop uploader served at GET mail/attachments/upload.
+# Calls the v1 URLs under BASE. No external assets, no browser storage.
+PAGE_HTML = """<!doctype html>
+<html lang="en"><head><meta charset="utf-8">
+<meta name="viewport" content="width=device-width,initial-scale=1">
+<title>Attachment uploader</title>
+<style>
+body{font-family:system-ui,'Segoe UI',Roboto,sans-serif;background:#111827;color:#e5e7eb;margin:0;padding:2rem}
+.wrap{max-width:900px;margin:0 auto}
+h1{font-size:1.35rem;margin:0 0 .3rem}
+p.sub{color:#9ca3af;margin:0 0 1.2rem;font-size:.9rem}
+code{background:#1f2937;padding:.1rem .35rem;border-radius:4px;font-size:.85em}
+#drop{border:2px dashed #4b5563;border-radius:12px;padding:3rem 1rem;text-align:center;cursor:pointer;transition:border-color .15s,background .15s;color:#9ca3af}
+#drop.hover{border-color:#f59e0b;background:#1f2937;color:#e5e7eb}
+table{width:100%;border-collapse:collapse;margin-top:1.4rem}
+th,td{padding:.5rem .6rem;text-align:left;border-bottom:1px solid #374151;font-size:.88rem;vertical-align:middle}
+th{color:#9ca3af;font-weight:600}
+input.key{width:100%;box-sizing:border-box;background:#1f2937;border:1px solid #4b5563;color:#e5e7eb;border-radius:6px;padding:.35rem .5rem;font-family:ui-monospace,Consolas,monospace;font-size:.85rem}
+button{background:#f59e0b;color:#111827;border:0;border-radius:8px;padding:.45rem .9rem;font-weight:600;cursor:pointer;font-size:.85rem}
+button.sec{background:#374151;color:#e5e7eb}
+button:disabled{opacity:.4;cursor:default}
+.ok{color:#34d399}.err{color:#f87171}.dim{color:#9ca3af}
+td a{color:#93c5fd;margin-right:.5rem;font-size:.85rem}
+#upAll{margin-top:1rem}
+.bar{height:4px;background:#374151;border-radius:2px;overflow:hidden;margin-top:.3rem;display:none}
+.bar > i{display:block;height:100%;width:0;background:#f59e0b;transition:width .1s linear}
+@media (max-width:640px){body{padding:1rem}th:nth-child(2),td:nth-child(2){display:none}}
+</style></head>
+<body><div class="wrap">
+<h1>Attachment uploader</h1>
+<p class="sub">Drop files below (or click to browse). Files are uploaded straight to S3 with a
+presigned POST, so they bypass the API Gateway / Lambda payload limits entirely.
+Max __MAXKB__&nbsp;KB per file. The key identifies the saved attachment: send it with
+<code>mail/send?...&amp;key=YOURKEY</code> or search it with
+<code>mail/attachments/find?key=YOURKEY&amp;text=...</code>.</p>
+<div id="drop">Drop files here or click to browse
+<input type="file" id="fi" multiple hidden></div>
+<table id="tbl" hidden><thead><tr>
+<th>File</th><th>Size</th><th style="width:38%">Key</th><th>Status</th><th></th>
+</tr></thead><tbody></tbody></table>
+<button id="upAll" hidden>Upload all pending</button>
+</div>
+<script>
+(function(){
+  var MAX_KB = __MAXKB__;
+  var BASE = __BASE_JSON__;
+  var API = BASE + '/mail/attachments/';
+  var KEY_RE = /^[A-Za-z0-9+][A-Za-z0-9._:@+=-]{0,127}$/;
+  var drop = document.getElementById('drop');
+  var fi = document.getElementById('fi');
+  var tbl = document.getElementById('tbl');
+  var tbody = tbl.querySelector('tbody');
+  var upAll = document.getElementById('upAll');
+  var rows = [];
+
+  function sanitize(n){
+    var k = n.replace(/[^A-Za-z0-9._-]/g, '_').replace(/^[._-]+/, '').slice(0, 128);
+    return k || 'attachment.bin';
+  }
+  function fmt(b){
+    if (b >= 1048576) return (b/1048576).toFixed(2) + ' MB';
+    return Math.max(1, Math.ceil(b/1024)) + ' KB';
+  }
+  function setStatus(row, cls, text){
+    row.stTd.className = cls; row.stTxt.textContent = text;
+  }
+  function setProgress(row, frac){
+    row.bar.style.display = 'block';
+    row.barIn.style.width = Math.round(frac * 100) + '%';
+  }
+  function addFiles(list){
+    for (var i = 0; i < list.length; i++) (function(f){
+      var tr = document.createElement('tr');
+      var nameTd = document.createElement('td'); nameTd.textContent = f.name;
+      var sizeTd = document.createElement('td'); sizeTd.textContent = fmt(f.size);
+      var keyTd = document.createElement('td');
+      var keyIn = document.createElement('input');
+      keyIn.className = 'key'; keyIn.value = sanitize(f.name); keyIn.spellcheck = false;
+      keyTd.appendChild(keyIn);
+      var stTd = document.createElement('td'); stTd.className = 'dim';
+      var stTxt = document.createElement('span'); stTxt.textContent = 'pending';
+      var bar = document.createElement('div'); bar.className = 'bar';
+      var barIn = document.createElement('i');
+      bar.appendChild(barIn); stTd.appendChild(stTxt); stTd.appendChild(bar);
+      var actTd = document.createElement('td');
+      var upBtn = document.createElement('button'); upBtn.textContent = 'Upload';
+      actTd.appendChild(upBtn);
+      tr.appendChild(nameTd); tr.appendChild(sizeTd); tr.appendChild(keyTd);
+      tr.appendChild(stTd); tr.appendChild(actTd);
+      tbody.appendChild(tr);
+      var row = { file: f, keyIn: keyIn, stTd: stTd, stTxt: stTxt, bar: bar, barIn: barIn,
+                  actTd: actTd, upBtn: upBtn, done: false };
+      rows.push(row);
+      if (f.size > MAX_KB * 1024) {
+        setStatus(row, 'err', 'too large (max ' + MAX_KB + ' KB)');
+        upBtn.disabled = true; row.done = true;
+      }
+      upBtn.addEventListener('click', function(){ upload(row); });
+    })(list[i]);
+    tbl.hidden = false; upAll.hidden = false;
+  }
+  function fail(row, msg){
+    setStatus(row, 'err', msg);
+    row.bar.style.display = 'none';
+    row.upBtn.disabled = false; row.keyIn.disabled = false;
+  }
+  // Two steps, no base64 anywhere:
+  //   1. ask the API for a presigned POST policy for this key
+  //   2. POST the raw File straight to S3 with it
+  // The bytes never traverse API Gateway or Lambda, so the only size limit
+  // is the content-length-range the policy itself carries.
+  function upload(row){
+    var key = row.keyIn.value.trim();
+    if (!KEY_RE.test(key)) {
+      setStatus(row, 'err', "invalid key (1-128 of letters, digits, . _ - : @ + =; must start with a letter, digit or +)");
+      return;
+    }
+    row.upBtn.disabled = true; row.keyIn.disabled = true;
+    setStatus(row, 'dim', 'requesting upload URL...');
+    fetch(API + 'upload/url?key=' + encodeURIComponent(key) + '&size=' + row.file.size +
+          '&filename=' + encodeURIComponent(row.file.name))
+      .then(function(rsp){ return rsp.json().then(function(j){ return { ok: rsp.ok, j: j }; }); })
+      .then(function(res){
+        if (!res.ok || !res.j || !res.j.url) {
+          fail(row, res.j && res.j.error ? res.j.error : 'could not get an upload URL');
+          return;
+        }
+        putToS3(row, key, res.j);
+      })
+      .catch(function(){ fail(row, 'network error requesting upload URL'); });
+  }
+  function putToS3(row, key, ps){
+    // Field order matters to S3: every policy field first, file last.
+    var fd = new FormData();
+    Object.keys(ps.fields).forEach(function(k){ fd.append(k, ps.fields[k]); });
+    fd.append('file', row.file, row.file.name);
+
+    var xhr = new XMLHttpRequest();
+    xhr.open('POST', ps.url, true);
+    setStatus(row, 'dim', 'uploading...');
+    setProgress(row, 0);
+    xhr.upload.onprogress = function(e){
+      if (e.lengthComputable) setProgress(row, e.loaded / e.total);
+    };
+    xhr.onload = function(){
+      if (xhr.status >= 200 && xhr.status < 300) {
+        row.bar.style.display = 'none';
+        markSaved(row, key, row.file.size);
+      } else {
+        // S3 answers with an XML <Message> on policy failures
+        var m = /<Message>([^<]*)<\\/Message>/.exec(xhr.responseText || '');
+        fail(row, m ? m[1] : ('S3 rejected the upload (HTTP ' + xhr.status + ')'));
+      }
+    };
+    xhr.onerror = function(){ fail(row, 'network error during upload (check bucket CORS)'); };
+    xhr.send(fd);
+  }
+  function markSaved(row, key, bytes){
+    row.done = true;
+    setStatus(row, 'ok', 'saved (' + bytes + ' bytes)');
+    row.actTd.textContent = '';
+    var g = document.createElement('a');
+    g.href = API + 'get?url=true&key=' + encodeURIComponent(key);
+    g.target = '_blank'; g.rel = 'noopener'; g.textContent = 'get';
+    var d = document.createElement('button'); d.className = 'sec'; d.textContent = 'delete';
+    d.addEventListener('click', function(){
+      d.disabled = true;
+      fetch(API + 'delete?key=' + encodeURIComponent(key))
+        .then(function(rsp){ return rsp.json(); })
+        .then(function(){ setStatus(row, 'dim', 'deleted'); row.actTd.textContent = ''; })
+        .catch(function(){ setStatus(row, 'err', 'delete failed'); d.disabled = false; });
+    });
+    var c = document.createElement('button'); c.className = 'sec'; c.textContent = 'copy send URL';
+    c.addEventListener('click', function(){
+      var url = BASE + '/mail/send?from=FROM&to=TO&subject=SUBJECT&body=BODY&key=' + encodeURIComponent(key);
+      if (navigator.clipboard && navigator.clipboard.writeText) {
+        navigator.clipboard.writeText(url).then(function(){ c.textContent = 'copied!'; });
+      } else { window.prompt('Send URL:', url); }
+    });
+    row.actTd.appendChild(g);
+    row.actTd.appendChild(d);
+    row.actTd.appendChild(document.createTextNode(' '));
+    row.actTd.appendChild(c);
+  }
+  upAll.addEventListener('click', function(){
+    rows.forEach(function(row){ if (!row.done && !row.upBtn.disabled) upload(row); });
+  });
+  drop.addEventListener('click', function(){ fi.click(); });
+  fi.addEventListener('change', function(){ addFiles(fi.files); fi.value = ''; });
+  ['dragenter','dragover'].forEach(function(ev){
+    drop.addEventListener(ev, function(e){ e.preventDefault(); drop.classList.add('hover'); });
+  });
+  ['dragleave','drop'].forEach(function(ev){
+    drop.addEventListener(ev, function(e){ e.preventDefault(); drop.classList.remove('hover'); });
+  });
+  drop.addEventListener('drop', function(e){
+    if (e.dataTransfer && e.dataTransfer.files && e.dataTransfer.files.length) addFiles(e.dataTransfer.files);
+  });
+})();
+</script></body></html>"""
