@@ -129,7 +129,21 @@ function Expect-Status($r, [int]$Status) {
     }
 }
 function Expect-Equal($Actual, $Expected, [string]$What) {
+    # Numbers compare as numbers: Windows PowerShell 5.1 reads 110.0 as 110.0, PowerShell 7 as 110.
+    $a = 0.0; $e = 0.0
+    if ($null -ne $Actual -and $null -ne $Expected -and $Actual -isnot [bool] -and $Expected -isnot [bool] -and
+        [double]::TryParse("$Actual", [Globalization.NumberStyles]::Float, [Globalization.CultureInfo]::InvariantCulture, [ref]$a) -and
+        [double]::TryParse("$Expected", [Globalization.NumberStyles]::Float, [Globalization.CultureInfo]::InvariantCulture, [ref]$e)) {
+        if ($a -ne $e) { Fail "$What`: expected $Expected, got $Actual" }
+        return
+    }
     if ("$Actual" -ne "$Expected") { Fail "$What`: expected '$Expected', got '$Actual'" }
+}
+# A response field that must exist. Reading a missing 'count' would otherwise give
+# PowerShell 7's built-in Count (1) and Windows PowerShell 5.1's $null - a false pass or fail.
+function Need($Object, [string]$Name) {
+    if ($null -eq $Object -or @($Object.PSObject.Properties.Name) -notcontains $Name) { Fail "the response has no '$Name' field" }
+    return $Object.$Name
 }
 function Expect-True($Condition, [string]$What) { if (-not $Condition) { Fail $What } }
 function Get-Json($r, [int]$Status = 200) {
@@ -278,12 +292,12 @@ if (Test-Group 'lists') {
     Test-Step lists 'push three records' {
         foreach ($i in 1..3) {
             $b = Get-Json (Invoke-Api 'lists/push' ([ordered]@{ key = $k; n = "$i"; email = "user$i@example.com" }))
-            Expect-Equal $b.index $i 'index'; Expect-Equal $b.count $i 'count'
+            Expect-Equal $b.index $i 'index'; Expect-Equal (Need $b count) $i 'count'
         }
     }
     Test-Step lists 'list with paging' {
         $b = Get-Json (Invoke-Api 'lists/list' ([ordered]@{ key = $k; start = 2; limit = 1 }))
-        Expect-Equal $b.count 3 'count'; Expect-Equal @($b.records).Count 1 'records returned'; Expect-Equal $b.nextStart 3 'nextStart'
+        Expect-Equal (Need $b count) 3 'count'; Expect-Equal @($b.records).Count 1 'records returned'; Expect-Equal $b.nextStart 3 'nextStart'
     }
     Test-Step lists 'pop in order, then exhausted (200, not an error)' {
         foreach ($i in 1..3) { $b = Get-Json (Invoke-Api 'lists/pop' @{ key = $k }); Expect-Equal $b.record.n "$i" "record $i" }
@@ -299,7 +313,7 @@ if (Test-Group 'lists') {
         Get-Json (Invoke-Api 'lists/vars/set' ([ordered]@{ key = $k; name = 'orderId'; value = 'ORD-42 & more' })) | Out-Null
         $b = Get-Json (Invoke-Api 'lists/vars/get' ([ordered]@{ key = $k; name = 'orderId' }))
         Expect-Equal $b.value 'ORD-42 & more' 'value'
-        $b = Get-Json (Invoke-Api 'lists/vars/list' @{ key = $k }); Expect-Equal $b.count 1 'variables'
+        $b = Get-Json (Invoke-Api 'lists/vars/list' @{ key = $k }); Expect-Equal (Need $b count) 1 'variables'
         Get-Json (Invoke-Api 'lists/vars/get' ([ordered]@{ key = $k; name = 'missing' })) 404 | Out-Null
     }
     Test-Step lists 'counters: add, subtract, get' {
@@ -310,7 +324,8 @@ if (Test-Group 'lists') {
     Test-Step lists 'cleanup register: push, pop, list' {
         Get-Json (Invoke-Api 'lists/cleanup/push' ([ordered]@{ key = $k; value = 'customer-1001'; note = 'created by test' })) | Out-Null
         $b = Get-Json (Invoke-Api 'lists/cleanup/pop' @{ key = $k }); Expect-Equal $b.value 'customer-1001' 'value'
-        $b = Get-Json (Invoke-Api 'lists/cleanup/list' @{ key = $k }); Expect-Equal $b.count 1 'entries'
+        $b = Get-Json (Invoke-Api 'lists/cleanup/list' @{ key = $k })
+        Expect-Equal (Need $b saved) 1 'saved'; Expect-Equal (Need $b removed) 1 'removed'; Expect-Equal (Need $b pending) 0 'pending'
     }
     Test-Step lists 'import JSON lines (POST) and read back' {
         $ik = "$k-import"
@@ -333,7 +348,7 @@ if (Test-Group 'lists') {
 # ================================================================== names
 if (Test-Group 'names') {
     Test-Step names 'regions' {
-        $b = Get-Json (Invoke-Api 'names/regions'); Expect-True ($b.count -ge 15) "only $($b.count) regions"
+        $b = Get-Json (Invoke-Api 'names/regions'); Expect-True ((Need $b count) -ge 15) "only $((Need $b count)) regions"
     }
     Test-Step names 'persona for a region' {
         $b = Get-Json (Invoke-Api 'names/get' @{ region = 'AU' })
@@ -413,7 +428,7 @@ if (Test-Group 'webhook') {
         Expect-Equal $r.Status 503 'forced status'
     }
     Test-Step webhook 'list shows both, newest first, as sent' {
-        $b = Get-Json (Invoke-Api 'webhook/list' @{ key = $k }); Expect-Equal $b.count 2 'events'
+        $b = Get-Json (Invoke-Api 'webhook/list' @{ key = $k }); Expect-Equal (Need $b count) 2 'events'
         $post = @($b.events) | Where-Object { $_.method -eq 'POST' } | Select-Object -First 1
         Expect-True $post 'the POST event'
         Expect-Equal $post.json.event 'order.paid' 'parsed JSON body'
@@ -436,7 +451,7 @@ if (Test-Group 'perf') {
     }
     Test-Step perf 'statistics' {
         $b = Get-Json (Invoke-Api 'perf/stats' @{ key = $k })
-        Expect-Equal $b.count 51 'count'; Expect-Equal $b.errors 1 'errors'
+        Expect-Equal (Need $b count) 51 'count'; Expect-Equal $b.errors 1 'errors'
         Expect-Equal $b.min 110 'min'; Expect-Equal $b.max 5000 'max'
         Expect-True ([Math]::Abs($b.p50 - 360) -le 15) "p50 $($b.p50) (expected about 360)"
     }
@@ -455,7 +470,7 @@ if (Test-Group 'perf') {
     }
     Test-Step perf 'clear' {
         Get-Json (Invoke-Api 'perf/clear' @{ key = $k }) | Out-Null
-        $b = Get-Json (Invoke-Api 'perf/stats' @{ key = $k }); Expect-Equal $b.count 0 'count after clear'
+        $b = Get-Json (Invoke-Api 'perf/stats' @{ key = $k }); Expect-Equal (Need $b count) 0 'count after clear'
     }
 }
 
@@ -476,7 +491,7 @@ if (Test-Group 'sms') {
     Test-Step sms 'get and list return that text' {
         $b = Get-Json (Invoke-Api 'sms/get' ([ordered]@{ number = $number; since = $since }))
         Expect-Equal $b.found $true 'found'; Expect-Equal $b.body "Your code is $($script:sent.code)" 'body'
-        $l = Get-Json (Invoke-Api 'sms/list' ([ordered]@{ number = $number; seconds = 300 })); Expect-Equal $l.count 1 'sms/list count'
+        $l = Get-Json (Invoke-Api 'sms/list' ([ordered]@{ number = $number; seconds = 300 })); Expect-Equal (Need $l count) 1 'sms/list count'
     }
     Test-Step sms 'real send to an unregistered number is refused' {
         Get-Json (Invoke-Api 'sms/send' @{ number = $number }) 403 | Out-Null
@@ -528,7 +543,7 @@ if (Test-Group 'mail') {
         $g = Get-Json (Invoke-Api 'mail/attachments/get' @{ key = $ak })
         Expect-Equal ([Text.Encoding]::UTF8.GetString([Convert]::FromBase64String($g.data))) $content 'content'
         $f = Get-Json (Invoke-Api 'mail/attachments/find' ([ordered]@{ key = $ak; text = "INV-$code" }))
-        Expect-True ($f.count -ge 1) 'text found in the attachment'
+        Expect-True ((Need $f count) -ge 1) 'text found in the attachment'
         Get-Json (Invoke-Api 'mail/attachments/delete' @{ key = $ak }) | Out-Null
         Get-Json (Invoke-Api 'mail/attachments/get' @{ key = $ak }) 404 | Out-Null
     }
