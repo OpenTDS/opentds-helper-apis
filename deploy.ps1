@@ -190,15 +190,32 @@ Write-Host "Account $account, region $Region"
 Write-Host "Caller  $callerArn"
 
 # ---------------------------------------------------------------- docs
-$python = Get-Command python -ErrorAction SilentlyContinue
-if (-not $python) { $python = Get-Command python3 -ErrorAction SilentlyContinue }
+# A Python 3 that actually runs. Windows ships python.exe / python3.exe
+# placeholders (App Execution Aliases) that only point at the Microsoft Store
+# and exit with an error, so finding the command is not enough - run it.
+function Get-WorkingPython {
+    foreach ($name in 'python', 'python3', 'py') {
+        foreach ($cmd in @(Get-Command $name -CommandType Application -All -ErrorAction SilentlyContinue)) {
+            $ok = & {
+                $ErrorActionPreference = 'Continue'
+                & $cmd.Source -c 'import sys; sys.exit(0 if sys.version_info >= (3, 8) else 1)' *> $null
+                $LASTEXITCODE -eq 0
+            }
+            if ($ok) { return $cmd.Source }
+        }
+    }
+    return $null
+}
+
+$python = Get-WorkingPython
 if ($python) {
-    & $python.Source tools/build_docs.py --check
+    & $python tools/build_docs.py --check
     if ($LASTEXITCODE -ne 0) {
-        throw 'Discovery documents are stale. Run: python tools/build_docs.py'
+        throw "Discovery documents are stale. Run: `"$python`" tools/build_docs.py"
     }
 } else {
-    Write-Warning 'Python not found - skipping the discovery-document freshness check.'
+    Write-Warning ('Python 3 not found (or only the Microsoft Store placeholder) - skipping the ' +
+        'discovery-document freshness check. Install Python 3 to enable it; deploying does not need it.')
 }
 Get-ChildItem -Path src -Recurse -Directory -Filter __pycache__ | Remove-Item -Recurse -Force
 

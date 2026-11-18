@@ -84,8 +84,24 @@ winget install Microsoft.PowerShell
 winget install Python.Python.3.12
 ```
 
+**No `winget`?** Windows Server 2019 and 2022 usually don't have it. Use the
+installers instead, from PowerShell run as Administrator:
+
+```powershell
+[Net.ServicePointManager]::SecurityProtocol = 'Tls12'; $ProgressPreference = 'SilentlyContinue'
+Invoke-WebRequest https://awscli.amazonaws.com/AWSCLIV2.msi -OutFile "$env:TEMP\AWSCLIV2.msi"
+Start-Process msiexec.exe -ArgumentList "/i `"$env:TEMP\AWSCLIV2.msi`" /qn" -Wait
+```
+
+Git: https://git-scm.com/download/win. Python 3 (tick *Add python.exe to PATH*):
+https://www.python.org/downloads/windows/. Windows PowerShell 5.1, already on
+every Windows Server, is enough; PowerShell 7 is optional. Python is optional
+too: without it `deploy.ps1` only skips a documentation freshness check.
+
 Open a **new** terminal so the tools are on PATH, then sign in to the target
-account. With IAM Identity Center (SSO):
+account. On a server, `aws configure sso --use-device-code` lets you approve the
+sign-in in your own PC's browser. If the server has an IAM role attached, always
+set `AWS_PROFILE`: without it the CLI silently uses the instance's own account. With IAM Identity Center (SSO):
 
 ```powershell
 aws configure sso          # once: creates a named profile
@@ -238,4 +254,5 @@ stack.
 | `mail/send` returns 502 | SES is still in the sandbox. See step 4. |
 | Actions: `Not authorized to perform sts:AssumeRoleWithWebIdentity` | The role trusts an exact `owner/repo` and environment, and case matters. Re-run the setup script from your own clone, and check the job uses the `aws-deploy` environment. |
 | Actions: `Set repository variable(s): …` | Run the setup script, or add the variables by hand. |
+| `Python was not found; run without arguments to install from the Microsoft Store` | Windows' placeholder `python.exe`, not a real Python. Harmless: `deploy.ps1` notices and skips the docs check with a warning. Install Python 3 to enable it. |
 | `Discovery documents are stale` | You edited `docs/`; run `python tools/build_docs.py` and commit the result. |
