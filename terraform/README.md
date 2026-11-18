@@ -45,9 +45,10 @@ changed functions are updated.
 
 ### If `terraform validate` complains
 
-This configuration was cross-checked against `template.yaml` (see below), but
-written without access to a Terraform binary, so `terraform validate` is its
-first real compile. The likeliest version-dependent spots, and what to do:
+This configuration validates and plans cleanly (OpenTofu 1.10 with AWS provider 6.73;
+`plan` against a mocked account creates 212 resources). Provider 6.x prints a
+deprecation warning for `range_key` on the DynamoDB tables; it is harmless. The
+likeliest version-dependent spots, if you use older versions:
 
 * *Invalid data source "aws_ses_active_receipt_rule_set"* (very old provider):
   delete the `check "active_receipt_rule_set"` block in `ses.tf`. It only
@@ -127,12 +128,13 @@ terraform state rm 'aws_dynamodb_table.this' 'aws_dynamodb_table.sms' \
   'aws_s3_bucket.this' 'aws_s3_bucket_public_access_block.this' \
   'aws_s3_bucket_server_side_encryption_configuration.this' \
   'aws_s3_bucket_lifecycle_configuration.imports' 'aws_s3_bucket_lifecycle_configuration.attachments' \
-  'aws_s3_bucket_lifecycle_configuration.inbound' 'aws_s3_bucket_cors_configuration.imports' \
-  'aws_s3_bucket_cors_configuration.attachments' 'aws_s3_bucket_policy.inbound'
+  'aws_s3_bucket_lifecycle_configuration.inbound' 'aws_s3_bucket_lifecycle_configuration.voice' \
+  'aws_s3_bucket_cors_configuration.imports' 'aws_s3_bucket_cors_configuration.attachments' \
+  'aws_s3_bucket_cors_configuration.voice' 'aws_s3_bucket_policy.inbound'
 terraform destroy
 ```
 
-To delete the data too: empty the three buckets, delete the `prevent_destroy` blocks in `storage.tf`, then run `terraform destroy`.
+To delete the data too: empty the four buckets, delete the `prevent_destroy` blocks in `storage.tf`, then run `terraform destroy`.
 
 ### Moving an account from the CloudFormation stack to Terraform
 

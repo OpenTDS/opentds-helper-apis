@@ -136,6 +136,9 @@ second copy in the same account, change `-StackName` **and** `-BucketPrefix`.
 
 ## 3b. Deploy from GitHub Actions
 
+> **New in 1.0.0 and not yet run against a real account.** Deploying from your machine
+> (3a) is the proven route. If you try this one, run it with "Check only" first.
+
 GitHub Actions signs in to AWS with **OpenID Connect**: AWS trusts tokens that
 GitHub issues to your repository's workflows, so no AWS access keys are ever
 stored in GitHub.

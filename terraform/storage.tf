@@ -17,7 +17,7 @@ locals {
     totp           = { hash = ["key", "S"], range = ["user", "S"], ttl = null }
     perf           = { hash = ["PK", "S"], range = ["SK", "S"], ttl = "ttl" }
     # PK "budget" / SK <UTC day>: characters sent to Polly that day.
-    voice          = { hash = ["PK", "S"], range = ["SK", "S"], ttl = "ttl" }
+    voice = { hash = ["PK", "S"], range = ["SK", "S"], ttl = "ttl" }
   }
 }
 
