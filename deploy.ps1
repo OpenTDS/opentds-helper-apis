@@ -484,4 +484,5 @@ if ($prod -ne 'True') {
         "(200/day). Request production access - see README.md.")
 }
 Write-Host "`nTry it:  https://$ApiHostLabel.$Domain/v1/lists/codes" -ForegroundColor Green
+Write-Host "Check every service:  .\scripts\test-deployment.ps1 -Domain $Domain" -ForegroundColor Green
 Write-Host "Guide:   https://$ApiHostLabel.$Domain/v1/llms.txt" -ForegroundColor Green

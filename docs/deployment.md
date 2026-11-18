@@ -184,13 +184,24 @@ script.
 
 ## 4. After the first deploy
 
-**Try it:**
+**Check it.** `scripts/test-deployment.ps1` exercises every service through its public URLs
+and prints a pass/fail table. It needs nothing but PowerShell (no AWS credentials, Postman or
+Python) and takes about a minute:
 
 ```powershell
-Invoke-RestMethod https://api.example.com/v1/lists/codes
+.\scripts\test-deployment.ps1 -Domain example.com
 ```
 
-and open `https://api.example.com/v1/llms.txt` for the full guide.
+It covers discovery, lists (queues, variables, counters, cleanup register, import), names,
+lock, TOTP codes (checked against a local RFC 6238 calculation), QR, webhooks, perf, SMS
+(simulated texts only), mail (a real email to your own domain and back, attachments) and
+voice. Test data goes under a fresh namespace each run and is cleared afterwards. The exit
+code is 0 when everything passes, so it also works in a pipeline. Useful options:
+`-Only lists,mail`, `-Skip voice` (avoids the one short Polly synthesis), `-ResultFile
+results.json` (or `.csv`). Straight after a first deploy the new hostname can take a minute
+or two to resolve; the script waits for it.
+
+Then open `https://api.example.com/v1/llms.txt` for the full guide.
 
 **SES production access (one manual step).** A new account's SES is in the
 *sandbox*: `mail/send` can only reach verified addresses (200 a day), and

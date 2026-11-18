@@ -65,7 +65,8 @@ tests/                   pytest (moto) for every service + template/route cross-
 ## Deploy
 
 **New to this?** Follow [docs/deployment.md](docs/deployment.md) — it goes from an empty AWS
-account to a working API, from your own machine or from GitHub Actions.
+account to a working API, from your own machine or from GitHub Actions. Afterwards,
+`.\scripts\test-deployment.ps1 -Domain <domain>` checks every service and prints a pass/fail table.
 
 Two equivalent ways: CloudFormation with `deploy.ps1` (below), or Terraform in
 [`terraform/`](terraform/README.md). Both build the same stack from the same `src/`;
