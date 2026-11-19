@@ -2,8 +2,11 @@ data "aws_caller_identity" "current" {}
 data "aws_partition" "current" {}
 
 # deploy.ps1 checks: the zone exists, is public, and is the zone for domain.
+# With no hosted_zone_id, find the public zone named domain (as deploy.ps1 does).
 data "aws_route53_zone" "this" {
-  zone_id = var.hosted_zone_id
+  zone_id      = var.hosted_zone_id != "" ? var.hosted_zone_id : null
+  name         = var.hosted_zone_id == "" ? var.domain : null
+  private_zone = var.hosted_zone_id == "" ? false : null
 }
 
 locals {
@@ -11,6 +14,7 @@ locals {
   partition = data.aws_partition.current.partition
   region    = var.aws_region
 
+  zone_id  = data.aws_route53_zone.this.zone_id
   api_host = "${var.api_host_label}.${var.domain}"
   base_url = "https://${local.api_host}/v1"
 

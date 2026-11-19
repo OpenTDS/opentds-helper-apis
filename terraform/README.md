@@ -24,7 +24,7 @@ AWS only: the services rely on API Gateway, Lambda, DynamoDB, S3, SES
 ```bash
 python tools/build_docs.py --check     # from the repository root: docs must be current
 cd terraform
-cp terraform.tfvars.example terraform.tfvars   # set domain, hosted_zone_id, aws_region
+cp terraform.tfvars.example terraform.tfvars   # set domain and aws_region (hosted_zone_id is optional)
 terraform init
 terraform validate
 terraform plan -out tf.plan            # read any warnings - see "SES receipt rules"

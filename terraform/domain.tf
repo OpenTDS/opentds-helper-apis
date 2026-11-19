@@ -36,7 +36,7 @@ resource "aws_route53_record" "cert_validation" {
     ]) : c.key => c
   }
 
-  zone_id         = var.hosted_zone_id
+  zone_id         = local.zone_id
   name            = each.value.name
   type            = each.value.type
   records         = [each.value.value]
@@ -63,7 +63,7 @@ resource "aws_api_gateway_domain_name" "this" {
 
 resource "aws_route53_record" "domain" {
   for_each = aws_api_gateway_domain_name.this
-  zone_id  = var.hosted_zone_id
+  zone_id  = local.zone_id
   name     = each.value.domain_name
   type     = "A"
 

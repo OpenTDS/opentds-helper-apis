@@ -20,8 +20,14 @@ variable "domain" {
 }
 
 variable "hosted_zone_id" {
-  description = "PUBLIC Route 53 hosted zone for domain, in this account (e.g. Z0123456789ABC)."
+  description = "PUBLIC Route 53 hosted zone for domain, in this account (e.g. Z0123456789ABC). Leave empty to look it up from domain, as deploy.ps1 does."
   type        = string
+  default     = ""
+
+  validation {
+    condition     = var.hosted_zone_id == "" || can(regex("^[A-Z0-9]{10,32}$", var.hosted_zone_id))
+    error_message = "hosted_zone_id must be a Route 53 zone id such as Z0123456789ABC, without /hostedzone/ - or leave it empty to look the zone up from domain."
+  }
 }
 
 variable "api_host_label" {

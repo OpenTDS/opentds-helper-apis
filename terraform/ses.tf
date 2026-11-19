@@ -23,7 +23,7 @@ resource "aws_sesv2_email_identity_mail_from_attributes" "domain" {
 # tokens are only known after the identity exists.
 resource "aws_route53_record" "dkim" {
   count   = var.create_ses_identity ? 3 : 0
-  zone_id = var.hosted_zone_id
+  zone_id = local.zone_id
   name    = "${aws_sesv2_email_identity.domain[0].dkim_signing_attributes[0].tokens[count.index]}._domainkey.${var.domain}"
   type    = "CNAME"
   ttl     = 300
@@ -32,7 +32,7 @@ resource "aws_route53_record" "dkim" {
 
 resource "aws_route53_record" "inbound_mx" {
   count   = var.manage_mail_dns_records ? 1 : 0
-  zone_id = var.hosted_zone_id
+  zone_id = local.zone_id
   name    = var.domain
   type    = "MX"
   ttl     = 300
@@ -43,7 +43,7 @@ resource "aws_route53_record" "inbound_mx" {
 # aligns. SES forbids receiving on it, hence the feedback MX.
 resource "aws_route53_record" "mail_from_mx" {
   count   = var.manage_mail_dns_records ? 1 : 0
-  zone_id = var.hosted_zone_id
+  zone_id = local.zone_id
   name    = "mail.${var.domain}"
   type    = "MX"
   ttl     = 300
@@ -52,7 +52,7 @@ resource "aws_route53_record" "mail_from_mx" {
 
 resource "aws_route53_record" "mail_from_spf" {
   count   = var.manage_mail_dns_records ? 1 : 0
-  zone_id = var.hosted_zone_id
+  zone_id = local.zone_id
   name    = "mail.${var.domain}"
   type    = "TXT"
   ttl     = 300
@@ -61,7 +61,7 @@ resource "aws_route53_record" "mail_from_spf" {
 
 resource "aws_route53_record" "spf" {
   count   = var.manage_spf_dmarc_records ? 1 : 0
-  zone_id = var.hosted_zone_id
+  zone_id = local.zone_id
   name    = var.domain
   type    = "TXT"
   ttl     = 300
@@ -70,7 +70,7 @@ resource "aws_route53_record" "spf" {
 
 resource "aws_route53_record" "dmarc" {
   count   = var.manage_spf_dmarc_records ? 1 : 0
-  zone_id = var.hosted_zone_id
+  zone_id = local.zone_id
   name    = "_dmarc.${var.domain}"
   type    = "TXT"
   ttl     = 300

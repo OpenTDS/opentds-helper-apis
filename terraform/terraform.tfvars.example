@@ -1,8 +1,8 @@
-# Copy to terraform.tfvars and edit. Only domain and hosted_zone_id are required.
+# Copy to terraform.tfvars and edit. Only domain is required.
 
-aws_region     = "us-west-1"   # must support SES email receiving
-domain         = "example.com"
-hosted_zone_id = "Z0123456789ABCDEFGHIJ"
+aws_region = "us-west-1"   # must support SES email receiving
+domain     = "example.com"
+# hosted_zone_id = "Z0123456789ABCDEFGHIJ"   # optional: found from domain when left out
 
 # api_host_label  = "api"            # -> https://api.example.com/v1
 # serve_apex_site = true             # also serve the landing page at https://example.com/
