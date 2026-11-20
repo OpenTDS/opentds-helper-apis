@@ -91,3 +91,25 @@ jobs:
           if ($env:SMS_SEND_ALLOWED_NUMBERS)   { $a.SmsSendAllowedNumbers = $env:SMS_SEND_ALLOWED_NUMBERS }
           if ($env:CHECK_ONLY -eq 'true')      { $a.CheckOnly = $true }
           ./deploy.ps1 @a
+
+      # After a real deploy, check every service end to end (fails the job if any test fails).
+      - name: test-deployment.ps1
+        if: ${{ !(github.event_name == 'workflow_dispatch' && inputs.check_only) }}
+        shell: pwsh
+        env:
+          DOMAIN: ${{ vars.DOMAIN }}
+          STACK_NAME: ${{ vars.STACK_NAME || 'testhelper-v1' }}
+          REGION: ${{ vars.AWS_REGION || 'ap-southeast-2' }}
+        run: |
+          $base = aws cloudformation describe-stacks --stack-name $env:STACK_NAME --region $env:REGION `
+            --query "Stacks[0].Outputs[?OutputKey=='BaseUrl'].OutputValue" --output text
+          if (-not $base -or $base -eq 'None') { $base = "https://api.$($env:DOMAIN)/v1" }
+          ./scripts/test-deployment.ps1 -BaseUrl $base -ResultFile test-results.json
+
+      - name: Keep the test results
+        if: ${{ always() && !(github.event_name == 'workflow_dispatch' && inputs.check_only) }}
+        uses: actions/upload-artifact@v7
+        with:
+          name: test-deployment-results
+          path: test-results.json
+          if-no-files-found: ignore

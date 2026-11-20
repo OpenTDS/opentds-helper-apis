@@ -1,5 +1,3 @@
-# SPDX-License-Identifier: MIT
-# Copyright (c) 2026 Test Data Services Pty. Ltd.
 <#
 .SYNOPSIS
   Checks a deployed Test Helper API end to end and prints a pass/fail table.
@@ -28,7 +26,12 @@
   (no -Domain: reads the API address from the deployed stack's outputs, using the AWS CLI)
 .EXAMPLE
   .\scripts\test-deployment.ps1 -Domain example.com -Only lists,mail -ResultFile results.json
+.EXAMPLE
+  ..\scripts\test-deployment.ps1 -BaseUrl (terraform output -raw base_url)
+  (from the terraform folder, after terraform apply)
 #>
+# SPDX-License-Identifier: MIT
+# Copyright (c) 2026 Test Data Services Pty. Ltd.
 [CmdletBinding()]
 param(
     [string]$Domain,

@@ -1,5 +1,3 @@
-# SPDX-License-Identifier: MIT
-# Copyright (c) 2026 Test Data Services Pty. Ltd.
 <#
 .SYNOPSIS
   One-off setup so GitHub Actions can deploy this repository into your AWS account.
@@ -25,6 +23,8 @@
 .EXAMPLE
   .\scripts\setup-github-deploy.ps1 -Domain example.com -Repository me/opentds-helper-apis -Region us-east-1
 #>
+# SPDX-License-Identifier: MIT
+# Copyright (c) 2026 Test Data Services Pty. Ltd.
 [CmdletBinding()]
 param(
     [string]$Domain,

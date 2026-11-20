@@ -62,6 +62,100 @@ Name-server changes can take from minutes to a couple of days to take effect.
 the certificate can't be validated until the delegation works, and a first
 deploy started too early sits waiting for hours before it fails.
 
+### Corporate domains: delegate a subdomain
+
+In most organisations the main domain's DNS belongs to another team, and often
+isn't in Route 53 at all. You don't need access to it. Ask for **one subdomain**,
+such as `testdata.example.com`, to be **delegated** to a Route 53 zone in the AWS
+account you deploy to. Everything this project creates (certificate checks, the
+`api.` record, MX, SPF, DKIM and DMARC) then stays inside that subdomain, and the
+rest of `example.com` is untouched.
+
+1. **Create the zone** in the deployment account and note its four name servers:
+
+   ```powershell
+   $r = aws route53 create-hosted-zone --name testdata.example.com --caller-reference (Get-Date -Format o) --output json | ConvertFrom-Json
+   $r.HostedZone.Id
+   $r.DelegationSet.NameServers
+   ```
+
+2. **Ask the DNS team** for the delegation. Something like:
+
+   > Please delegate `testdata.example.com` to AWS Route 53 by adding these four
+   > `NS` records for `testdata.example.com` in the `example.com` zone (TTL 3600):
+   > `ns-....awsdns-...` (x4, from step 1). No other changes are needed: all
+   > records under the subdomain, including mail records, are managed in Route 53.
+   > Please also tell us if `example.com` has a CAA record.
+
+3. **Check for CAA.** A CAA record lists the certificate authorities allowed to
+   issue certificates for the domain, and it applies to subdomains too. If
+   `example.com` has one that doesn't include Amazon, the HTTPS certificate is
+   never issued and the first deploy waits and then fails. Check:
+
+   ```powershell
+   Resolve-DnsName example.com -Type CAA
+   ```
+
+   If it lists authorities and `amazon.com` isn't one of them, add a CAA record
+   to *your* subdomain zone, which takes precedence for everything under it:
+
+   ```powershell
+   $batch = '{"Changes":[{"Action":"UPSERT","ResourceRecordSet":{"Name":"testdata.example.com","Type":"CAA","TTL":3600,"ResourceRecords":[{"Value":"0 issue \"amazon.com\""}]}}]}'
+   Set-Content "$env:TEMP\caa.json" $batch
+   aws route53 change-resource-record-sets --hosted-zone-id <ZoneId> --change-batch "file://$env:TEMP\caa.json"
+   ```
+
+4. **Wait for the delegation**, then deploy with `-Domain testdata.example.com`
+   (Terraform: `domain = "testdata.example.com"`). `deploy.ps1 -CheckOnly`
+   confirms the name servers point at the zone. The API is then
+   `https://api.testdata.example.com/v1`.
+
+#### The Route 53 permissions a deployment needs
+
+Only these, on only the delegated zone, so a security team can grant them without
+giving access to anything else in DNS:
+
+```json
+{
+  "Version": "2012-10-17",
+  "Statement": [
+    {
+      "Sid": "FindTheZone",
+      "Effect": "Allow",
+      "Action": ["route53:ListHostedZones", "route53:ListHostedZonesByName"],
+      "Resource": "*"
+    },
+    {
+      "Sid": "WaitForChanges",
+      "Effect": "Allow",
+      "Action": "route53:GetChange",
+      "Resource": "arn:aws:route53:::change/*"
+    },
+    {
+      "Sid": "ThisZoneOnly",
+      "Effect": "Allow",
+      "Action": [
+        "route53:GetHostedZone",
+        "route53:ListResourceRecordSets",
+        "route53:ChangeResourceRecordSets",
+        "route53:ListTagsForResource"
+      ],
+      "Resource": "arn:aws:route53:::hostedzone/<ZoneId>"
+    }
+  ]
+}
+```
+
+Replace `<ZoneId>` with the zone's id (from step 1, without `/hostedzone/`).
+This covers both `deploy.ps1` (CloudFormation) and Terraform. The deployment
+needs other permissions too (CloudFormation or Terraform's resources, Lambda,
+API Gateway and so on); this policy is only the DNS part.
+
+If the domain's zone is in a *different* AWS account (a central networking
+account, say), the same approach applies: delegate a subdomain from that zone to
+a new zone in the deployment account. A deployment that writes into another
+account's zone, or into DNS outside Route 53, isn't supported.
+
 ## 2. Get the code
 
 ```powershell
@@ -204,6 +298,10 @@ code is 0 when everything passes, so it also works in a pipeline. Useful options
 results.json` (or `.csv`). Straight after a first deploy the new hostname can take a minute
 or two to resolve; the script waits for it.
 
+Deployed with Terraform instead? Run the same check against its output, from the
+`terraform` folder: `..\scripts\test-deployment.ps1 -BaseUrl (terraform output -raw base_url)`.
+The GitHub Actions workflow runs it automatically after every real deploy.
+
 Then open `https://api.example.com/v1/llms.txt` for the full guide.
 
 **SES production access (one manual step).** A new account's SES is in the
@@ -231,6 +329,10 @@ Pull the latest code (or merge it into your fork) and run the same deploy
 again, from your machine or from Actions. Settings you don't pass keep their
 deployed values. Pass a setting explicitly to change it, or pass `''` to clear
 a list.
+
+After every update, run `.\scripts\test-deployment.ps1 -Domain example.com` again
+(Terraform: `-BaseUrl (terraform output -raw base_url)`). It takes about a minute
+and confirms that every service still works end to end.
 
 ## Removing it
 
@@ -262,7 +364,7 @@ stack.
 |---|---|
 | `No public Route 53 hosted zone named …` | The zone is missing or in another account. See step 1. |
 | `… is delegated to …, but hosted zone … uses …` | The registrar's name servers don't point at the zone. Fix them at the registrar, wait, and run `-CheckOnly` again. |
-| First deploy stuck on `ApiCertificate` | DNS delegation isn't working yet, so ACM can't validate. Delete the stack (a first create can't be cancelled), remove any buckets it left behind (see *Removing it*), fix the delegation, and redeploy. |
+| First deploy stuck on `ApiCertificate` | DNS delegation isn't working yet, or a CAA record on the parent domain doesn't allow Amazon (see *Corporate domains*), so ACM can't validate. Delete the stack (a first create can't be cancelled), remove any buckets it left behind (see *Removing it*), fix the delegation, and redeploy. |
 | `api.<domain> is already an API Gateway custom domain owned by something else` | Another stack uses that hostname. Use `-ApiHostLabel` or a different domain. |
 | A receipt rule set is already active | Only one can be active per region. Choose **A** to add this stack's rule to it; `-Yes` and Actions do that automatically. |
 | `mail/send` returns 502 | SES is still in the sandbox. See step 4. |

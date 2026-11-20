@@ -27,8 +27,8 @@ cd terraform
 cp terraform.tfvars.example terraform.tfvars   # set domain and aws_region (hosted_zone_id is optional)
 terraform init
 terraform validate
-terraform plan -out tf.plan            # read any warnings - see "SES receipt rules"
-terraform apply tf.plan
+terraform plan -out plan.tfplan        # read any warnings - see "SES receipt rules"
+terraform apply plan.tfplan
 ```
 
 The first apply takes 5–10 minutes, mostly waiting for ACM to validate the
@@ -39,9 +39,23 @@ terraform output                        # base_url, llms_guide, site_url, bucket
 terraform output -raw sms_device_key    # the X-Device-Key for the SMS capture app
 ```
 
+**Then check it.** Run the same end-to-end check as for the CloudFormation
+deployment. It exercises every service through its public URLs and prints a
+pass/fail table (52 tests, about a minute; PowerShell 5.1 or 7, no AWS
+credentials needed). From this folder:
+
+```powershell
+..\scripts\test-deployment.ps1 -BaseUrl (terraform output -raw base_url)
+```
+
+Every test should pass. Straight after a first apply the new hostname can take a
+minute or two to resolve; the script waits for it. Then run `terraform plan`
+once more: it should report **No changes**. Anything else means Terraform and
+AWS disagree about a setting, and every apply would keep changing it.
+
 To update after a code or docs change, run `python tools/build_docs.py`, then
-`terraform apply` again. The code package is re-zipped from `../src`, and only
-changed functions are updated.
+`terraform apply` again, then the check above. The code package is re-zipped
+from `../src`, and only changed functions are updated.
 
 ### If `terraform validate` complains
 
