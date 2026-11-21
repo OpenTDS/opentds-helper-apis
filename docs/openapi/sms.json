@@ -269,7 +269,7 @@
     ],
     "operationId": "smsList",
     "summary": "Every text message received in the last N seconds",
-    "description": "Sweeps every number at once (or one, with number), newest first, with the list of numbers seen. Useful for finding which handset a message landed on, and for a post-run audit.",
+    "description": "Sweeps every number at once (or one, with number), newest first, with the list of numbers seen. Useful for finding which handset a message landed on, and for a post-run audit. Returns at most 5000 messages (or about 5 MB), newest first; when more matched, truncated is true.",
     "parameters": [
      {
       "name": "seconds",

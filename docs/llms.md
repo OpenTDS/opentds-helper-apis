@@ -1,6 +1,6 @@
 # Test Helper API v1
 
-> A free, no-login HTTP API that gives software tests the things they usually have to fake: queues of test data, throwaway email inboxes, SMS capture, webhook capture, locks, TOTP codes, QR codes, realistic personas, performance statistics and spoken utterances for voice interfaces. Every endpoint is a plain URL you can open in a browser.
+> A free, no-login HTTP API that gives software tests the things they usually have to fake: queues of test data, throwaway email inboxes, SMS capture, webhook capture, locks, TOTP codes, QR codes, realistic personas, performance statistics, reconciliation of what a test submitted against what was processed, and both halves of a spoken conversation with a voice interface: saying things to it, and hearing what it says back. A `health` service reports the deployed build and self-tests every service end to end. Every endpoint is a plain URL you can open in a browser.
 
 Base URL: `{BASE_URL}`
 
@@ -38,7 +38,7 @@ Every example in this file is a complete URL. Replace the values after `=` with 
 ```
 
 * Everything in the path is lower case, single words, no hyphens, no underscores, no camelCase.
-* Services: `lists`, `names`, `lock`, `mail`, `sms`, `webhook`, `totp`, `qr`, `perf`, `voice`.
+* Services: `lists`, `names`, `lock`, `mail`, `sms`, `webhook`, `totp`, `qr`, `perf`, `recon`, `voice`, `health`, `trace`.
 * `GET /v1` returns a JSON index of all services.
 * `GET /v1/<service>` returns a JSON list of that service's actions.
 * Path segments are matched case-insensitively too (`/v1/lists/LIST` works), but always write them lower case.
@@ -48,7 +48,7 @@ Every example in this file is a complete URL. Replace the values after `=` with 
 ### 1.2 HTTP methods
 
 * **Every endpoint answers GET.** You can drive the whole API with nothing but URLs. When in doubt, use GET.
-* Five endpoints also accept a request body with POST: `lists/import`, `mail/send`, `mail/attachments/save`, `voice/say`, `voice/save`. For these the query-string parameters are identical in GET and POST; POST just lets you send a large body.
+* Ten endpoints also accept a request body with POST: `lists/import`, `mail/send`, `mail/attachments/save`, `recon/expect`, `recon/confirm`, `voice/say`, `voice/save`, `voice/listen`, `voice/find`, `voice/compare`. For these the query-string parameters are identical in GET and POST; POST just lets you send a large body.
 * `webhook/receive` accepts ANY method (GET, POST, PUT, PATCH, DELETE…) because it is the target your system-under-test calls.
 * `sms/receive` is POST only and needs a secret header (see Section 3.5). Normal callers never use it.
 * All other endpoints ignore the method: a POST with query parameters behaves exactly like the GET.
@@ -87,14 +87,14 @@ These names mean the same thing in every service.
 | `address` | An email address. This is the mail catcher's namespace. Case-insensitive. |
 | `name` | A named item inside a key: a variable or a counter. |
 | `user` | A user inside a key (TOTP only). |
-| `ref` | A handle the API gave you earlier that you pass back: an import reference, a received-attachment reference, a lock reference, a generated utterance. Never invent one. |
+| `ref` | A handle the API gave you earlier that you pass back: an import reference, a received-attachment reference, a lock reference, a generated utterance (`v…`), a listening (`h…`). Never invent one. |
 | `value` | The thing being stored. |
-| `text` / `text64` | Literal text (a QR payload, a search term, the words to speak). |
-| `wait` | Seconds to hold the request open waiting for something to happen. Range 0–20 (0–25 for `lists/import`). `wait=0` returns immediately. |
+| `text` / `text64` | Literal text (a QR payload, a search term, the words to speak, the words expected to be heard). |
+| `wait` | Seconds to hold the request open waiting for something to happen. Range 0–20 (0–25 for `lists/import`). `wait=0` returns immediately. Default 0, except `voice/listen`, `voice/find` and `voice/compare`, where it is 20: they have nothing to return until the audio is transcribed. |
 | `since` / `until` | A time window as UTC epoch **seconds** (e.g. `1760054400`). `sms/get` and `webhook/list` also take epoch milliseconds in `since`. |
 | `limit` | Maximum number of items to return. |
 | `start` | First item to return, **1-based** (`start=1` is the first item). |
-| `format` | Output or input format: `json`, `csv`, `svg`, `html`, `text`; for `voice`, the audio format (`mp3`, `wav`, …). |
+| `format` | Output or input format: `json`, `csv`, `svg`, `html`, `text`; for `voice`, the audio format (`mp3`, `wav`, `pcm`, …). |
 | `seed` | Any string or number; the same seed gives the same "random" result every time. |
 | `url` / `view` / `download` | Booleans on the actions that return a file (`mail/attachments/get`, `voice/say`, `voice/get`): a presigned URL instead of base64, or a redirect to the file itself. `voice` also has `play`: a web page that plays the audio by itself. |
 
@@ -106,11 +106,12 @@ The same verb means the same thing in every service.
 |---|---|
 | `push` | Append an item to the END of a queue. |
 | `pop` | Take the NEXT item and advance the pointer. **Consuming**: each item is handed out once. |
-| `cyclepop` | Like `pop`, but after the last item it starts again at the first instead of running out. Each item is handed out once per pass. |
+| `cyclepop` | Like `pop`, but after the last item it starts again at the first instead of running out. Each item is handed out once per pass. (`recon/cyclepop`: the outstanding record handed out least recently.) |
 | `random` | Return a random item WITHOUT consuming it. |
 | `get` | Read one thing. No side effects. |
 | `set` | Create or overwrite a named value. |
 | `add` | Add to an accumulator (increment a counter, add a performance data point). |
+| `expect` / `confirm` | Record the two sides of a reconciliation: a value the test submitted / a value it saw processed (`recon` only). |
 | `list` | Read many things, with totals. |
 | `reset` | Rewind the pointer to the start. Data is KEPT. (`pop` will hand out the same items again.) |
 | `clear` | Delete every item of that collection under the namespace. Data is GONE. |
@@ -119,7 +120,9 @@ The same verb means the same thing in every service.
 | `send` / `receive` | Outbound / inbound message. |
 | `save` | Store a file. |
 | `say` | Turn text into spoken audio (`voice` only). The same request always returns the same stored audio. |
-| `find` | Search inside stored content. |
+| `listen` | Turn audio into the words spoken in it (`voice` only). The same audio is transcribed once. |
+| `find` | Search inside stored content: a file's text, or the words heard in audio. |
+| `compare` | How alike two stored things are: two files, or what was heard and what was expected. |
 | `text` | Extract the text of a stored file. |
 | `import` / `status` | Bulk load, and its progress. |
 | `upload` | A browser page for humans (HTML). `upload/url` returns a presigned S3 POST for programs. |
@@ -134,6 +137,7 @@ Read-only nouns (`codes`, `regions`, `stats`, `series`, `keys`, `export`, `voice
 * Every response echoes the namespace it acted on: `key` or `address`.
 * Times are UTC epoch **seconds** in fields ending `Time` (`savedTime`, `createdTime`, `receivedTime`). Other units are spelled out in the name: `waitedMs`, `ageSeconds`, `timestampMs`, `bytes`, `sizeKb`.
 * `Cache-Control: no-store` on everything except discovery documents. Never cache a response.
+* Every response carries an **`X-Build`** header naming the deployment that produced it (e.g. `20261120.0412`). Log it with your results so a failure can be tied to the exact build; `health/get` explains it.
 
 ### 1.9 Things that are NOT errors (HTTP 200)
 
@@ -146,6 +150,9 @@ Load-test tools count non-2xx responses as failures, so these common situations 
 * A lock that is already held: `lock/acquire` returns `200` with `"locked": false`.
 * Waiting with `wait=` and nothing arrived: `200` with an empty result.
 * A failed `perf/assert` gate: `200` with `"pass": false` (unless you add `strict=true`, which makes it 412).
+* A reconciliation that does not balance: `recon/get` returns `200` with `"reconciled": false` and the counts (unless you add `strict=true`, which makes it 412). No short group for `recon/cyclepop`: `200` with `"exhausted": true`.
+* Audio that is still being transcribed: `voice/listen`, `voice/find` and `voice/compare` return `200` with `"pending": true`. Ask again until it is `false`.
+* Words that were not said: `voice/find` returns `200` with `"found": false`; a `voice/compare` below `min` returns `200` with `"pass": false`.
 
 **Always check the body, not just the status code.**
 
@@ -156,9 +163,12 @@ Load-test tools count non-2xx responses as failures, so these common situations 
 * Too fast (`sms/send` more than once per 10 s per handset) → **429** with `retryAfterSeconds`.
 * A password-protected PDF opened without the right password → **422** with `passwordRequired` or `passwordIncorrect`.
 * `voice/say` with `strict=true` and a tag the engine cannot render → **422** with the `tags` that would not be heard.
-* `voice/say` needing new synthesis after the deployment's daily budget is used up → **429** with `budgetExhausted: true` (audio already stored still works).
+* `voice/say` needing new synthesis after the deployment's daily budget is used up → **429** with `budgetExhausted: true` (audio already stored still works). `voice/listen` has a daily budget of its own, with the same 429.
+* Audio the transcriber cannot make words of (`voice/listen`, `voice/find`, `voice/compare`) → **422** with `state: "failed"` and the reason in `detail`.
+* Audio in a format `voice/listen` does not take (Ogg, FLAC, WebM, M4A, AMR) → **400** with `detected` and a `hint` on converting it.
 * An import whose file yields no records or is not parseable → **422** with `state: "failed"`; the key is left unchanged.
 * `perf/assert` with `strict=true` whose checks fail → **412**.
+* `recon/get` with `strict=true` when the key is not reconciled → **412** (same body). `recon/get?value=…` for a match key never expected or confirmed (without `wait`) → **404**.
 * Bad or missing parameters → **400**, e.g. `{ "error": "Missing required query parameter 'key'.", "status": 400 }` or `{ "error": "'start' must be a whole number.", "status": 400, "received": "abc" }`.
 * Error body shape is always:
 
@@ -174,8 +184,8 @@ with extra fields when they help: `hint` (what to do instead), `allowed` (the va
 
 * The gateway gives up at 29 seconds, so `wait` is capped at 20 s (25 s for `lists/import`).
 * A request body is capped at about 4 MB. Anything larger (up to 50 MB for list imports, 100 MB for mail attachments) must go to S3 via an `upload/url` presigned POST.
-* Received email and its attachments are kept 7 days; uploaded import files 90 days; raw `perf` points 7 days; locks at most 60 s; generated `voice` utterances 30 days after their last use. Lists, variables, counters, the cleanup register, TOTP secrets, saved attachments and saved audio do not expire.
-* One `voice/say` utterance is at most 3000 characters.
+* Received email and its attachments are kept 7 days; uploaded import files 90 days; raw `perf` points 7 days; locks at most 60 s; generated `voice` utterances 30 days after their last use; a `recon` key 30 days after its first write; audio given to `voice/listen`, and its words, 30 days. Lists, variables, counters, the cleanup register, TOTP secrets, saved attachments and saved audio do not expire.
+* One `voice/say` utterance is at most 3000 characters. Audio POSTed to `voice/listen` is at most 4096 KB (about 87 s of 24 kHz samples, 131 s at 16 kHz; much longer as MP3).
 
 ### 1.12 Where the answer is in the response
 
@@ -203,7 +213,14 @@ Different services put the thing you asked for in different fields. Read these, 
 | `qr/get` | `png` / `dataUri` (json) or the image (svg) | — |
 | `perf/stats` | count, mean, `p<nn>` fields | `count: 0` |
 | `voice/say`, `voice/get` | `data` (base64 audio) or `url`; plus `ref`, `text`, `durationMs`, `tags[]` | 404 for an unknown `ref`/`key` |
+| `voice/listen` | `text` (string), `normalised`, `words[]`, plus `ref` | `pending: true`, `text: null` while transcribing (200); `speech: false`, `text: ""` when nothing was said (200) |
+| `voice/find` | `found` (boolean), `count`, `values`, `results[]` | `found: false` with `closest` and `hint` (200); `pending: true`, `found: null` (200) |
+| `voice/compare` | `similarity` (0–1), `same`, `differences[]`, `pass` (with `min`) | `pending: true`, `similarity: null` (200) |
 | `perf/assert` | `pass` (boolean), `checks[]` | `pass: false` (200, or 412 with `strict=true`) |
+| `recon/expect`, `recon/confirm` | `match`, `status` (`matched` / `mismatched` / `reconciledByCount` / `short` / `over`), `expected`, `confirmed`; POST: `recorded`, `groups`, `paired`, `warnings` | 400 for an empty value |
+| `recon/get` | `expected`, `confirmed`, `matched`, `outstanding`, `unexpected`, `mismatched`, `ambiguousGroups`, `groups`, `reconciled`; with `value=`: `status`, `group` | `expected: 0`, `reconciled: false` (200); 404 for an unknown key without `wait` |
+| `recon/list` | `groups` (array: `value`, `status`, `shortBy`/`overBy`, `candidates`), `total` | `returned: 0`, `groups: []` (200) |
+| `recon/cyclepop` | `value`, `group` | `exhausted: true`, `group: null` (200) |
 
 ---
 
@@ -239,12 +256,29 @@ Different services put the thing you asked for in different fields. Read these, 
 | Generate a QR code image | `qr/get` |
 | Record response times and get percentiles | `perf/add` then `perf/stats` |
 | Fail a pipeline if performance is too slow | `perf/assert` |
+| Check that everything my test submitted was processed, and nothing else was | `recon/expect` for each submission, `recon/confirm` for each processed item, then `recon/get` — recipe 4.18 |
+| Reconcile full values against masked ones (a text shows only the last 4 digits of an id) | `recon/expect?…&suffix=4` with the full values, `recon/confirm` with the masked ones — recipe 4.20 |
+| Also check that related values (amount, status) came through unchanged | the same, with the fields on both sides (`&amount=120.00`) — `mismatched` counts the ones that differ (keys unique on both sides only) |
+| Wait for an asynchronous pipeline to finish processing what I submitted | `recon/get?key=…&wait=20` (repeat until `outstanding` is 0) |
+| Fail a pipeline unless every submission was processed correctly | `recon/get?key=…&strict=true` (412 when not reconciled) |
+| See which submissions were not processed, were processed wrongly, or were never submitted | `recon/list?key=…&status=unreconciled` (or `short` / `over` / `mismatched`; `format=csv` for a report) |
+| Measure how long a back end takes to process each submission | `recon/confirm?…&perfkey=<key>.lag`, then `perf/stats?key=<key>.lag` |
+| Have several checker scripts look up outstanding submissions one at a time | `recon/cyclepop` — recipe 4.19 |
 | Get spoken audio to play into a voice chatbot, phone menu or talk button | `voice/say` — see recipe 4.15 |
 | Make the speech sound anxious, angry, slow, quiet… | `voice/say` with `emotion=` or `[tags]` in the text; then read `tags[].rendered` |
 | Replay exactly the audio a failed test used | `voice/get?ref=<ref>` |
 | Let a person hear an utterance in a browser with no player on screen | `voice/say?text=…&play=true` (or `voice/get?ref=<ref>&play=true`) |
 | Keep an utterance, or a recording of a real voice, for good | `voice/save` |
 | See which voices exist and what each engine can render | `voice/voices` / `voice/tags` |
+| Find out what a voice chatbot or phone menu said back | POST the reply audio to `voice/listen` — see recipe 4.17 |
+| Check that a spoken reply contained certain words, a date, a number | `voice/find?ref=<ref>&text=…` (or `regex=`, or `left=`/`right=`) |
+| Pull a value out of a spoken reply (a reference number, a time) to use in the next step | `voice/find?ref=<ref>&left=<words before it>` → `values[0]` |
+| Check a scripted spoken message word for word, with a tolerance | `voice/compare?ref=<ref>&text=…&min=0.9` |
+| Check an utterance is intelligible before using it in tests | `voice/compare?ref=<the voice/say ref>` (round trip) |
+| Hear for yourself what the system under test said | `voice/get?ref=<the voice/listen ref>&play=true` |
+| Know which build of this API answered (to record with test results) | `health/get` → `build`, or the `X-Build` header of any response |
+| Check this API is working end to end before a test run, or from an uptime monitor | `health/check` (`strict=true` for a 503 when it is not `ok`) |
+| A TOTP code for a chosen moment, not now | `totp/get?...&time=<epoch seconds>` |
 
 ---
 
@@ -1233,7 +1267,7 @@ Notes: always pass `since` = the time just before your application sent the text
 GET {BASE_URL}/sms/list?seconds=600&number=%2B61400000000
 ```
 
-Returns `count`, `numbers` and `messages` (newest first, each with `mocked`).
+Returns `count`, `numbers` and `messages` (newest first, each with `mocked`). At most 5,000 messages (or about 5 MB) per response; beyond that you get the newest ones plus `truncated: true` — shorten `seconds` or add `number` to get the rest.
 
 #### `sms/send` — send a real text (registered handsets only)
 
@@ -1338,6 +1372,7 @@ GET {BASE_URL}/totp/set?key=myapp&user=ann&secret=JBSWY3DPEHPK3PXP
 | `key` + `user` | one form | Use a stored secret |
 | `secret` | other form | Stateless: compute from this secret directly |
 | `digits`, `period`, `algorithm` | | Only with `secret`; stored form uses the values from `totp/set` |
+| `time` | | Codes for this moment (UTC epoch seconds) instead of now — both forms. `nextCode`, `previousCode` and `secondsRemaining` are relative to it and `atTime` echoes it. To replay the code a failed run was given, or to check against the RFC 6238 vectors: `secret=GEZDGNBVGY3TQOJQGEZDGNBVGY3TQOJQ&digits=8&time=59` → `94287082` |
 
 Stored:
 ```
@@ -1493,7 +1528,186 @@ Only points recorded with `raw=true` are exported (they are kept 7 days); withou
 
 ---
 
-### 3.10 `voice` — spoken utterances for voice interfaces
+### 3.10 `recon` — reconcile what a test submitted with what was processed
+
+**Concept.** Two sides. `recon/expect` records that the test **submitted** a record — an email address, an order or case number, a participant id. `recon/confirm` records that a record was **seen processed** — in an email caught with `mail/pop`, a text, a webhook, a database row, an API lookup. Records are matched **by count** on a **match key**: a key expected 3 times needs 3 confirmations. Nothing is ever deduplicated — a value sent twice is two records. `recon/get` gives the counts; `recon/list` gives the groups behind them. The `key` parameter is the reconciliation set: use one per run.
+
+The match key is the value itself — or, with **`suffix=N`** on the key's first write, its **last N characters**. That lets the expected side send full values (`609829094`) and the confirmed side masked ones (`xxxxx9094`, or just `9094`). The full values are kept and reported as `candidates`.
+
+Every match key is a **group**, in one of five states:
+
+| Group state | Meaning |
+|---|---|
+| `matched` | expected 1, confirmed 1, and the fields given on both sides agree |
+| `mismatched` | expected 1, confirmed 1, but a field given on both sides differs |
+| `reconciledByCount` | expected = confirmed, more than 1: they balance, but which confirmation belongs to which record cannot be told |
+| `short` | confirmed < expected: `shortBy` records are missing — when there are several `candidates`, any of them |
+| `over` | confirmed > expected: `overBy` records were not expected (or were sent twice) |
+
+* **The simplest case needs only the value.** Expect each value, confirm each value, read the counts.
+* **Several records may share a key.** Then the result rests on counting, not pairing: `ambiguousGroups` in `recon/get` says how many groups that is. A `short` group with three `candidates` and `shortBy: 1` means one of those three was not processed — the service cannot say which.
+* **To check related values, add fields** to either call: any parameter other than `key`, `value`, `value64`, `ignorecase`, `suffix` and `perfkey` is a field (`&amount=120.00&status=lodged`). Fields are compared **only when the key is unique on both sides** (1 vs 1), because only then is the pairing certain. Fields given on one side only are ignored unless `recon/get` or `recon/list` name them in `fields=`. Numbers compare as numbers (`120.00` = `120`); everything else as exact text. Field names are lower-cased; an empty value means "not given"; the first record on each side keeps its fields.
+* **Matching is exact and case-sensitive** by default; spaces at either end are trimmed. For email addresses send `ignorecase=true`. **The first write to a key fixes `ignorecase` and `suffix`** for its life (asking for another value later is a 400).
+* **Order does not matter.** A confirmation that arrives first makes its group `over` until the expectation arrives.
+* Values containing `+`, `&`, `%` or `#` (e.g. `jane+test@…`): send `value64`, or URL-encode (`+` as `%2B`).
+* A key's data is deleted **30 days after its first write** (`expiresTime` in `recon/get`).
+* Every add is atomic: concurrent writers from many load generators never lose or double-count a record.
+
+**Choose a value that survives the pipeline.** Reconciliation only works on something both sides can see. If the system under test issues its own ids, put a token you control into a field it carries through (an email subject, a reference) — a `rand10` from `lists/codes` — and reconcile on that. If it only shows part of the value (a masked number), use `suffix=`.
+
+#### `recon/expect` (GET or POST) — record submitted records
+
+| Param | Required | Meaning |
+|---|---|---|
+| `key` | * | The reconciliation set, e.g. `run42-sms` |
+| `value` / `value64` | * (GET) | One record's value. Up to 1000 bytes |
+| `suffix` | | Match on the last N characters (0–64). Only the first write to a key decides it. Default `0` (whole value) |
+| `ignorecase` | | Boolean. Match case-insensitively. Only the first write to a key decides it. Default `false` |
+| `perfkey` | | A `perf` key: each record this call pairs records its processing lag (ms) there |
+| any other name | | A field of this record, e.g. `amount=120.00` |
+
+```
+GET {BASE_URL}/recon/expect?key=run42-signups&value=jane.doe@example.com&ignorecase=true
+GET {BASE_URL}/recon/expect?key=run42-sms&value=609829094&suffix=4
+GET {BASE_URL}/recon/expect?key=run42-orders&value=ORD-1001&amount=120.00&status=lodged
+```
+
+Response (200) — the second call:
+```json
+{ "key": "run42-sms", "ignorecase": false, "suffix": 4, "value": "609829094", "match": "9094", "status": "short", "previousStatus": null, "expected": 1, "confirmed": 0 }
+```
+
+`expected` and `confirmed` are the group's counts after this record.
+
+**Many records at once: POST them as the body** (up to 5,000 per call; every value is a record, repeats included), in one of three formats, detected automatically (or say `format=json|csv|text`):
+
+```
+POST {BASE_URL}/recon/expect?key=run42-sms&suffix=4
+Content-Type: text/plain
+
+609829094
+609889890
+```
+
+* **text** — one value per line; blank lines and lines starting with `#` are skipped.
+* **CSV** — a header row with a column named `value`; the other columns are fields. Chosen when the `Content-Type` says csv or the first line contains `,` `;` tab or `|`.
+* **JSON** — `["a@x.com", "b@x.com"]`, or objects `[{"value": "ORD-1001", "amount": "120.00"}]` (other members are fields), or `{"values": [...]}`.
+
+With a body, `suffix` and `ignorecase` stay in the query string; fields go in the body. Response: `received`, `recorded`, `skipped` (with `warnings` naming each unusable item — the rest are still recorded), `groups` (distinct match keys in this call) and `paired` (records this call paired with the other side).
+
+#### `recon/confirm` (GET or POST) — record processed records
+
+Exactly the parameters, body formats and response of `recon/expect`, for the other side. There is no need to repeat `suffix`: the key already has it.
+
+```
+GET {BASE_URL}/recon/confirm?key=run42-sms&value=xxxxx9094
+GET {BASE_URL}/recon/confirm?key=run42-orders&value=ORD-1001&amount=125.00&perfkey=run42-orders.lag
+```
+
+Response (200) — the second call:
+```json
+{ "key": "run42-orders", "ignorecase": false, "suffix": 0, "value": "ORD-1001", "match": "ORD-1001", "status": "mismatched", "previousStatus": "short", "expected": 1, "confirmed": 1, "latencyMs": 41875,
+  "differences": [ { "field": "amount", "expected": "120.00", "confirmed": "125.00" } ] }
+```
+
+`latencyMs` appears when this record paired an expectation with a confirmation: ms since the key's first expectation (exact when the key is unique; for a shared key, measured from its first record). With `perfkey`, the same lag goes into `perf` (0 when the confirmation came first), so `perf/stats?key=run42-orders.lag` gives its percentiles and `perf/assert?key=run42-orders.lag&p95lt=60000` gates on it.
+
+#### `recon/get` — the counts (or one key)
+
+| Param | Required | Meaning |
+|---|---|---|
+| `key` | * | The reconciliation set |
+| `value` / `value64` | | Report the group this value falls under instead of the counts |
+| `wait` | | 0–20 s: hold the request until nothing is `outstanding` (with `value`: until that group is no longer `short`). Out of time is still a 200 |
+| `strict` | | Boolean; `true` = HTTP **412** (same body) unless `reconciled` is `true` |
+| `grace` | | Seconds. Unexpected records in groups that went `over` within this window are counted in `withinGrace` and do not stop `reconciled` |
+| `sla` | | Seconds. Adds `overdue`: outstanding records in groups first expected longer ago than this |
+| `fields` | | Comma-separated fields that must be present on both sides and agree in 1-vs-1 groups. Judges every group again (`source: "scan"`, up to 50,000 groups) and adds latency percentiles |
+
+```
+GET {BASE_URL}/recon/get?key=run42-sms
+GET {BASE_URL}/recon/get?key=run42-sms&wait=20&strict=true
+GET {BASE_URL}/recon/get?key=run42-orders&fields=amount,status
+GET {BASE_URL}/recon/get?key=run42-sms&value=xxxxx7377
+```
+
+Response (200):
+```json
+{ "key": "run42-sms", "source": "counters",
+  "expected": 1000, "confirmed": 922, "matched": 922, "outstanding": 78, "unexpected": 0, "mismatched": 0,
+  "ambiguousGroups": 41,
+  "groups": { "matched": 845, "mismatched": 0, "reconciledByCount": 34, "short": 78, "over": 0 },
+  "latencyMs": { "count": 922, "mean": 38211.4, "min": 9120, "max": 118042 },
+  "reconciled": false, "ignorecase": false, "suffix": 4, "expiresTime": 1798272000, "waitedMs": 20012 }
+```
+
+* The counts are in **records**: `expected` and `confirmed` are records on each side; `matched` = records paired (the sum over keys of the smaller count); **`outstanding`** = records expected and not confirmed (the total `shortBy`); **`unexpected`** = records confirmed and not expected (the total `overBy`); `mismatched` = records in mismatched groups. So `matched + outstanding = expected` and `matched + unexpected = confirmed`.
+* `groups` counts match keys in each state. `ambiguousGroups` counts keys where more than one record shares the key on either side — the part of the result that rests on counting rather than exact pairing.
+* **`reconciled`** is `true` only when something was expected, nothing is `outstanding` or `mismatched`, and nothing is `unexpected` (beyond `grace`). A key nothing was written to has `expected: 0` and is never reconciled, so an empty run cannot pass a gate.
+* Without `fields`, the counts come from running counters — one read, however many records the key holds.
+* With `value`: `{key, value, match, exists, status, group, reconciled, waitedMs}` — `group` as in `recon/list`; `reconciled` is `true` for `matched` and `reconciledByCount`. A key never seen is a 404, or `exists: false` (200) when `wait` was given.
+
+#### `recon/list` — the groups behind a count
+
+| Param | Required | Meaning |
+|---|---|---|
+| `key` | * | The reconciliation set |
+| `status` | | `matched`, `mismatched`, `reconciledByCount`, `short`, `over`, **`unreconciled`** (`short` + `over` + `mismatched`: the values still to reconcile), or `all` (default) |
+| `start` / `limit` | | Paging: `start` 1-based (default 1), `limit` 1–1000 (default 100); `start + limit` may reach 10,000 |
+| `format` | | `json` (default) or `csv` |
+| `fields` | | As in `recon/get`: judge every group against these fields |
+
+```
+GET {BASE_URL}/recon/list?key=run42-sms&status=unreconciled&limit=1000
+GET {BASE_URL}/recon/list?key=run42-sms&status=short&format=csv&limit=1000
+```
+
+Response (200):
+```json
+{ "key": "run42-sms", "status": "unreconciled", "total": 78, "start": 1, "returned": 78,
+  "groups": [ { "value": "7377", "status": "short", "expected": 3, "confirmed": 2, "shortBy": 1,
+                "candidates": ["609857377", "609887377", "609937377"], "confirmedValues": ["xxxxx7377"],
+                "expectedTime": 1795680000, "confirmedTime": 1795680042, "latencyMs": 41875 }, … ] }
+```
+
+* `value` is the match key. `candidates` are the values the expected side gave under it (up to 100); `confirmedValues` the values the confirmed side gave, when they are not all among the candidates.
+* `expectedFields` / `confirmedFields` hold the first record's fields on each side; `differences` appears on a `mismatched` group.
+* Groups come oldest-in-their-state first (for `short`, the one `recon/cyclepop` handed out least recently first). `total` is the number of groups with that status.
+* The CSV has the columns `value,status,expected,confirmed,shortBy,overBy,candidates,confirmedValues,expectedTime,confirmedTime,latencyMs,differences` (candidates separated by spaces), then `expected.<field>` and `confirmed.<field>` for the fields on the page.
+
+#### `recon/cyclepop` — the next short key to check
+
+| Param | Required | Meaning |
+|---|---|---|
+| `key` | * | The reconciliation set |
+
+```
+GET {BASE_URL}/recon/cyclepop?key=run42-sms
+```
+
+Response (200):
+```json
+{ "key": "run42-sms", "exhausted": false, "value": "0661", "checks": 2,
+  "group": { "value": "0661", "status": "short", "expected": 1, "confirmed": 0, "shortBy": 1, "candidates": ["609850661"], "expectedTime": 1795680000, "checks": 2 } }
+```
+
+Returns the `short` group handed out **least recently** and moves it to the back, so several checker scripts each get a different one and every short key comes round in turn. It is **not consuming**: the group stays short until enough confirmations arrive. `exhausted: true` (200) when no group is short. `checks` = how many times it has been handed out. Use it when nothing tells you that a submission was processed, so a script has to go and look (recipe 4.19).
+
+#### `recon/clear` — delete everything under a key
+
+| Param | Required | Meaning |
+|---|---|---|
+| `key` | * | The reconciliation set |
+
+```
+GET {BASE_URL}/recon/clear?key=run42-sms
+```
+
+Response: `{ "key": …, "deleted": 973, "cleared": true, "more": false, "comment": "cleared" }`. Deletes the groups, the counts and the key's `ignorecase` and `suffix` settings. Up to 10,000 items per call: **call again while `more` is `true`** (until then the counts are not meaningful). A new key from `lists/codes` is usually simpler than clearing an old one. A key written by the first version of `recon` (which counted each value once) is refused with a 400 until it is cleared.
+
+---
+
+### 3.11 `voice` — speaking to a voice interface, and hearing what it says back
 
 **Concept.** `voice/say` turns text into speech so a test can talk to a voice interface: a voice chatbot, a phone menu, a "press to talk" button. The audio is **stored by its content**: the whole request (words, tags, voice, engine, format) is hashed, the hash is the `ref`, and the audio is kept under it.
 
@@ -1501,6 +1715,13 @@ Only points recorded with `raw=true` are exported (they are kept 7 days); withou
 * **`ref`** is the handle for one generated utterance. It is kept 30 days after its last use. **`key`** is a name YOU choose for audio that must be kept: pin a `ref` with `voice/save`, or upload a recording. These two words mean what they mean for mail attachments.
 * **Tags** in square brackets direct the delivery: `[anxious] I've been waiting. [pause] Is the doctor late?`. Tags are never spoken.
 * **The response says what really happened to each tag.** No AWS voice takes emotion as an instruction today, so an emotion tag is *approximated* (speaking rate, pitch, volume) or *inferred* from the wording, and a sound such as `[sighs]` is not audible at all. Read `tags[].rendered` before you assert on tone.
+
+**Listening.** `voice/listen` is the other half: it turns audio — what the system under test said back — into words, so a test can hold a two-way spoken conversation (recipe 4.17). `voice/find` and `voice/compare` then assert on what was said.
+
+* A listening is stored by content too. Its `ref` starts with `h` (an utterance's starts with `v`) and is a hash of the audio and the language. **The same audio is transcribed once**; sending it again, or asking by `ref`, returns the same words with `"cached": true`.
+* **Transcription takes several seconds**, even for one sentence. The three listening endpoints take `wait` (0–20, default 20) and answer `"pending": true` when the words are not ready in time. Ask again — the `listenUrl` in the response, or the same request — until `pending` is `false`. **Always check `pending` before reading the words.**
+* **Never compare a transcript with an exact string.** The same speech is written "3 p.m." one day and "three PM" the next. `voice/find` and `voice/compare` match *normalised* words: lower case, no punctuation, numbers as digits (`twenty-fourth` = `24th` = `24`; `four eight three` = `483`), and spoken and written forms of a word together (`doctor` = `Dr.`).
+* **A transcriber mishears**, names above all. Every response carries `confidence` and `uncertain` (the words it was least sure of). Read them before reporting that the system under test said the wrong thing.
 
 #### `voice/say` — text to audio (GET or POST)
 
@@ -1648,14 +1869,253 @@ GET {BASE_URL}/voice/tags
 
 No parameters. Returns every known tag with its `kind`, the other words that mean the same (`also`), and how each engine renders it.
 
+#### `voice/listen` — audio to the words spoken in it (POST the audio, or GET stored audio)
+
+The other half of a conversation: give it the audio the system under test answered with, and it returns what was said.
+
+| Param | Required | Meaning |
+|---|---|---|
+| POST body | * | The audio, one of four ways: raw bytes with `Content-Type: application/octet-stream`; the base64 of the audio as text; JSON `{"audio": "<base64>"}`; or JSON `{"chunks": ["<base64>", "<base64>"]}` — the pieces a speech-to-speech model streamed back, joined in the order given. Max 4096 KB |
+| `ref` or `key` | * | Instead of a body: audio that is already stored. `ref` from `voice/say` (starts `v`) or from an earlier `voice/listen` (starts `h`); `key` from `voice/save` |
+| `format` | | Only for audio with no header: `pcm` (16-bit mono little-endian samples), `mulaw` or `alaw` (telephone audio). Leave it out for WAV and MP3 |
+| `hz` | with `format=pcm` | Sample rate of headerless audio, 8000–48000. `mulaw` and `alaw` default to 8000 |
+| `language` | | The language to listen for: `en-AU` (the default), `en-US`, `en-GB`, …, or `auto` to have it identified |
+| `wait` | | Seconds to wait for the words, 0–20. **Default 20** |
+
+In a JSON body the parameters may be fields as well: `{"chunks": [...], "format": "pcm", "hz": 24000}`.
+
+**What can be listened to:** WAV (uncompressed), MP3, and raw `pcm` / `mulaw` / `alaw`. Ogg, FLAC, WebM, M4A and AMR are refused with a 400 — convert first, e.g. `ffmpeg -i reply.webm -ar 16000 -ac 1 reply.wav`. (Transcription is billed by the second, and only audio whose length can be counted from its bytes is passed on.) Audio made by `voice/say` is listened to by its `ref`; make it as `mp3`, `wav` or `pcm` for that (an `ogg` utterance is passed to the transcriber as it is, and may come back as a 422).
+
+```
+POST {BASE_URL}/voice/listen                          body = reply.wav, Content-Type: application/octet-stream
+POST {BASE_URL}/voice/listen?format=pcm&hz=24000       body = raw samples, Content-Type: application/octet-stream
+GET  {BASE_URL}/voice/listen?ref=h3n8q2v7k1mz          the words of an earlier listening (waits if they are not ready)
+GET  {BASE_URL}/voice/listen?ref=v7k2m9q4x1ab          listen to an utterance voice/say made
+```
+
+Response (200, the words are ready):
+
+```json
+{
+  "ref": "h3n8q2v7k1mz", "cached": false, "pending": false,
+  "text": "Your next appointment is on Tuesday the 24th at 3 p.m. with Dr. Newin.",
+  "normalised": "your next appointment is on tuesday the 24 at 3 pm with dr newin",
+  "speech": true, "confidence": 0.949, "uncertain": ["Newin"],
+  "language": "en-AU", "format": "wav", "hz": 24000, "channels": 1, "bytes": 250124, "durationMs": 5210,
+  "speechStartMs": 120, "speechEndMs": 4970, "wordsPerMinute": 173, "longestPauseMs": 50,
+  "words": [ { "word": "Your", "startMs": 120, "endMs": 420, "confidence": 0.99 }, "…" ],
+  "getUrl": "{BASE_URL}/voice/get?ref=h3n8q2v7k1mz",
+  "playUrl": "{BASE_URL}/voice/get?ref=h3n8q2v7k1mz&play=true",
+  "createdTime": 1795126044, "waitedMs": 7412
+}
+```
+
+Response (200, not ready within `wait`): `{ "ref": "h3n8q2v7k1mz", "cached": false, "pending": true, "text": null, "listenUrl": "{BASE_URL}/voice/listen?ref=h3n8q2v7k1mz&wait=20", "comment": "still being transcribed: …", … }`. Call `listenUrl` until `pending` is `false`.
+
+* `text` is the transcript as written. `normalised` is the same words as `voice/find` and `voice/compare` match them. `speech: false` (with `text: ""`) means nothing was said.
+* `uncertain` lists the words the transcriber was least sure of (confidence under 0.6). In the example the name was misheard, and `uncertain` says so.
+* `speechStartMs` is how long the audio ran before the first word; `durationMs - speechEndMs` is the silence at the end.
+* `ref` works everywhere a voice ref does: `voice/get?ref=h…` returns the audio as it was heard (raw samples come back as a WAV), `playUrl` plays it in a browser, `voice/save?key=…&ref=h…` keeps it. Heard audio and its words are deleted after 30 days.
+* A very short WAV or raw clip (under 0.6 s, e.g. "Yes.") is lengthened with silence so that it can be transcribed; `paddedMs` says by how much.
+* New listening is limited per day on each deployment: 429 with `budgetExhausted: true` when it is used up. Audio already heard still works.
+* Audio the transcriber cannot make words of → 422 with `state: "failed"` and the reason in `detail`.
+
+#### `voice/find` — was this said? (GET, or POST the audio)
+
+Searches what was heard. It matches **normalised words**, so `text=Tuesday the twenty-fourth at 3 pm` finds "Tuesday the 24th at 3 p.m.".
+
+| Param | Required | Meaning |
+|---|---|---|
+| `ref` or `key` | * | The audio: `ref` from `voice/listen` (or `voice/say`), or a saved `key`. Or POST the audio exactly as for `voice/listen` — one request then listens and searches |
+| `text` / `text64` | one of these three | Words that should have been said, in this order |
+| `regex` / `regex64` | | A pattern, run on `normalised`, ignoring case. `values` = group 1 of each match (or the whole match) |
+| `left` (+ `right`) / `left64`, `right64` | | Capture what was said between two markers. Without `right`, to the end of the sentence. `values` = the captures |
+| `fuzzy` | | With `text` or `left`/`right`: `true` also accepts words spelt nearly the same (similarity 0.8); or a number 0.5–1. Numbers are never fuzzy |
+| `exact` | | With `text` or `regex`: `true` searches the transcript as written (capitals, punctuation). `ignorecase=true` then relaxes case |
+| `context` | | Words of context either side of each match. Default 5, max 50 |
+| `limit` | | Most results to return. Default 20, max 50. `count` is still the true total |
+| `wait`, `language`, `format`, `hz` | | As for `voice/listen` |
+
+```
+GET {BASE_URL}/voice/find?ref=h3n8q2v7k1mz&text=Tuesday%20the%20twenty-fourth%20at%203%20pm
+GET {BASE_URL}/voice/find?ref=h3n8q2v7k1mz&left=appointment%20is%20on&right=with
+GET {BASE_URL}/voice/find?ref=h3n8q2v7k1mz&regex64=KFxkKykgKGFtfHBtKQ          regex64 = base64 of (\d+) (am|pm)
+POST {BASE_URL}/voice/find?text=your%20appointment%20is%20confirmed            body = the reply audio
+```
+
+Response (200):
+
+```json
+{
+  "ref": "h3n8q2v7k1mz", "pending": false,
+  "match": { "mode": "boundaries", "left": "appointment is on", "right": "with", "fuzzy": 1.0, "context": 5 },
+  "found": true, "count": 1, "truncated": false,
+  "results": [ { "word": 6, "words": 6, "matched": "appointment is on Tuesday the 24th at 3 p.m.",
+                 "context": "Your next appointment is on Tuesday the 24th at 3 p.m. with Dr. Newin.",
+                 "startMs": 1870, "endMs": 3920, "confidence": 0.99, "value": "Tuesday the 24th at 3 p.m." } ],
+  "values": ["Tuesday the 24th at 3 p.m."],
+  "text": "Your next appointment is on Tuesday the 24th at 3 p.m. with Dr. Newin.",
+  "normalised": "your next appointment is on tuesday the 24 at 3 pm with dr newin",
+  "speech": true, "confidence": 0.949, "uncertain": ["Newin"], "waitedMs": 41
+}
+```
+
+* Assert on `found` (boolean) or `count`. With `regex` or `left`/`right`, the captured strings are in `values`.
+* Each result is given in the words heard: `word` is its position (first word = 1), `startMs`/`endMs` when it was said, `confidence` the least certain word in it. With `left`/`right` these describe the captured value.
+* **Not found** is 200 with `found: false`, `count: 0`, and help: `closest` (the stretch heard that was most like what you asked for, e.g. `{ "heard": "Dr. Newin", "similarity": 0.773, "word": 13 }`), `fuzzyCount` when `fuzzy=true` would match, and `hint`.
+* `fuzzy` measures spelling, not sound. A misheard name ("Newin" for "Nguyen") is too far apart for `fuzzy=true`; assert on other words in the sentence, or use a regex listing the spellings you accept: `regex=dr (nguyen|newin|win)`.
+* Still transcribing → 200 with `pending: true`, `found: null`, `count: null`. Send the request again with the `ref` it returned.
+
+#### `voice/compare` — how close is what was heard to what was expected? (GET, or POST the audio)
+
+| Param | Required | Meaning |
+|---|---|---|
+| `ref` or `key` | * | The audio heard (or POST it, as for `voice/listen`) |
+| `text` / `text64` | | What you expected to hear |
+| `otherref` / `otherkey` | | Instead of `text`: compare with other audio — the words of an utterance (`v…`), or what was heard in another recording (`h…`, or a saved key) |
+| `min` | | A similarity 0–1. Adds `pass`: `true` when `similarity` ≥ `min` |
+| `wait`, `language`, `format`, `hz` | | As for `voice/listen` |
+
+```
+GET {BASE_URL}/voice/compare?ref=h3n8q2v7k1mz&min=0.9&text=Your%20next%20appointment%20is%20on%20Tuesday%20the%2024th%20at%203%20pm%20with%20Dr%20Nguyen
+GET {BASE_URL}/voice/compare?ref=v7k2m9q4x1ab                 round trip: is this utterance understood as written?
+```
+
+Response (200):
+
+```json
+{
+  "ref": "h3n8q2v7k1mz", "pending": false, "pass": true, "min": 0.9,
+  "same": false, "similarity": 0.929, "wordErrorRate": 0.071, "expectedWords": 14, "heardWords": 14,
+  "differences": [ { "expected": "nguyen", "heard": "newin", "word": 14, "startMs": 4670 } ],
+  "differencesTruncated": false,
+  "expectedText": "Your next appointment is on Tuesday the 24th at 3 pm with Dr Nguyen",
+  "text": "Your next appointment is on Tuesday the 24th at 3 p.m. with Dr. Newin.",
+  "expectedNormalised": "your next appointment is on tuesday the 24 at 3 pm with dr nguyen",
+  "normalised": "your next appointment is on tuesday the 24 at 3 pm with dr newin",
+  "speech": true, "confidence": 0.949, "uncertain": ["Newin"], "waitedMs": 41
+}
+```
+
+* `wordErrorRate` = (substituted + missing + extra words) ÷ expected words; `similarity` = 1 − that (never below 0). `same: true` means the same words after normalising.
+* `differences` lists each place the two differ. `expected: ""` means extra words were heard; `heard: ""` means expected words were missing.
+* **Round trip**: with no `text` and a `ref` from `voice/say`, the utterance is listened to and compared with its own words (`roundTrip: true`). Do this once for a new utterance: if the transcriber cannot understand it, the system under test may not either.
+* Use `compare` for replies that are scripted (a fixed greeting, a legal notice). For replies whose wording changes from run to run, assert on the facts with `voice/find`.
+* Still transcribing → 200 with `pending: true` and `same`, `similarity`, `wordErrorRate` all `null`.
+
 ---
 
-### 3.11 Discovery documents
+### 3.12 `health` — which build is deployed, and an end-to-end self-test
+
+**Concept.** Every function of a deployment carries the same build: `version` (the API contract, semver), `build` (stamped at deploy time — the UTC deploy time as `yyyymmdd.hhmm`, or `dev` if unstamped), `commit` and `deployedTime`. Every response returns `build` as the `X-Build` header. `health/check` goes further: it sends a real request with a known answer to every service through this same public API and reports each one.
+
+#### `health/get` — the build (no probes)
+
+```
+GET {BASE_URL}/health/get
+```
+
+Response (200):
+```json
+{
+  "version": "1.3.0", "build": "20261120.0412", "commit": "a3f9c2e", "deployedTime": 1795672320,
+  "region": "us-west-1", "baseUrl": "{BASE_URL}", "mailDomain": "{MAIL_DOMAIN}",
+  "services": ["lists", "names", "lock", "mail", "sms", "webhook", "totp", "qr", "perf", "recon", "voice", "health", "trace"],
+  "checkUrl": "{BASE_URL}/health/check",
+  "lastCheck": { "status": "ok", "summary": "11 of 11 probes passed", "build": "20261120.0412", "checkedTime": 1795680001, "ageSeconds": 42 }
+}
+```
+
+Calls nothing and changes nothing — call it as often as you like. `lastCheck` is `null` until a check has run. A trailing `+` on `commit` means it was deployed with uncommitted changes.
+
+Both health actions also return `traceId`, `traceSampled` and `traceUrl`: this request's trace as a public page (`trace/get?…&format=html` — no sign-in), with `traceDataUrl` the same as JSON and `traceConsoleUrl` the AWS console view for whoever operates the deployment. The trace is written as the request finishes, so it appears a few seconds after the response; the page waits for it. These are `null`, with `traceComment`, when the deployment has tracing switched off.
+
+#### `health/check` — run the self-test
+
+| Param | Required | Meaning |
+|---|---|---|
+| `fresh` | | `true` = run a new check instead of serving one up to 60 s old. Refused (the cached result comes back, with `comment`) while the last check is under 30 s old |
+| `strict` | | `true` = answer **503** unless `status` is `ok` — for an uptime monitor or a pipeline gate that only reads the status code |
+
+```
+GET {BASE_URL}/health/check
+GET {BASE_URL}/health/check?fresh=true&strict=true
+```
+
+Response (200):
+```json
+{
+  "status": "ok",
+  "version": "1.3.0", "build": "20261120.0412", "commit": "a3f9c2e", "deployedTime": 1795672320,
+  "region": "us-west-1", "checkedTime": 1795680001, "ageSeconds": 12, "cached": true, "elapsedMs": 6140,
+  "summary": "11 of 11 probes passed",
+  "services": {
+    "lists": { "status": "ok", "checked": "push, pop, exhausted pop, clear, vars, counters", "elapsedMs": 812, "requests": 11, "build": "20261120.0412" },
+    "mail":  { "status": "ok", "checked": "send (SES), receive (MX, receipt rule, S3, parser), pop, attachment find", "deliveryMs": 4310, "elapsedMs": 5120, "requests": 5, "build": "20261120.0412" }
+  },
+  "functionsChecked": 15,
+  "buildMismatch": []
+}
+```
+
+What each probe does: `lists` push/pop/exhausted pop/vars/counters; `lock` acquire, contention, release; `names` a seeded persona against its known answer; `qr` a fixed SVG against its known hash; `totp` the RFC 6238 test vectors; `webhook` receive (POST) and list; `perf` the stats of 1..10; `recon` two expectations and two confirmations (one differing only in case, on a case-sensitive key) counted by `recon/get`; `mail` a real send to this domain's catcher, delivered through SES inbound, popped, and its attachment searched; `sms` a mock text (no real text is sent); `voice` the Polly voice list, a stored utterance, and `voice/find` listening to that utterance (Amazon Transcribe) for its words — `listen` says what was heard, or that listening is switched off. On the first check after a deploy the voice probe can be `timeout` with a hint while that utterance is transcribed for the first time; the next check reads the stored transcript. The probes run in parallel within 20 s, in a private namespace, and clean up after themselves.
+
+Read `status`: `ok` (every probe passed and every function is on this build), `degraded` (a probe failed or timed out, or `buildMismatch` is not empty), `down` (`lists`, `lock` and `webhook` — the DynamoDB core — all failed, or nothing passed). A failed probe has `error`, often `hint` and `detail` (`expected` / `received`). `buildMismatch` lists functions or services on another build — normal for a minute during a deploy; otherwise a partial or rolled-back update.
+
+`checkTraceUrl` (page) and `checkTraceDataUrl` (JSON) are the trace of the run that produced the result: the health function and every probe request it made, in one trace, so a slow or failed probe can be followed into the service that caused it. It equals `traceUrl` when `cached` is `false`; for a cached result `traceUrl` is just this request (a read of the stored result).
+
+Notes: the result is cached for 60 s (`cached`, `ageSeconds`), so calling it often is cheap and does not multiply the work. Without `strict` the answer is always 200 — branch on `status`, not the code. A mail failure with a hint about the receipt rule means sending works but inbound mail is not arriving.
+
+---
+
+### 3.13 `trace` — where a request's time went
+
+**Concept.** Requests to this API are traced with AWS X-Ray. `trace/get` shows one trace, cleaned for the public: every API request in it, the function behind each with its initialisation (cold start), handler and overhead times, faults, and a few sentences about what stands out. Only this deployment's part of a trace is shown, and only paths (never hosts or query strings), methods, statuses, function and API names and timings — never account ids, ARNs, request ids or caller IPs. You get a trace id from a `health` response (`traceId`, `traceUrl`).
+
+#### `trace/get` — one trace
+
+| Param | Required | Meaning |
+|---|---|---|
+| `ref` | * | The X-Ray trace id: `1-<8 hex>-<24 hex>` |
+| `format` | | `json` (default) or `html` — a page with the requests, what stands out and a waterfall of every step |
+| `wait` | | Seconds (0–20) to hold the request open while X-Ray is still receiving the trace |
+
+```
+GET {BASE_URL}/trace/get?ref=1-673d9a1b-5f2a8c3e9d1b4a6f7e8c9d0a
+GET {BASE_URL}/trace/get?ref=1-673d9a1b-5f2a8c3e9d1b4a6f7e8c9d0a&format=html
+```
+
+Response (200):
+```json
+{
+  "traceId": "1-673d9a1b-5f2a8c3e9d1b4a6f7e8c9d0a", "pending": false,
+  "startedTime": 1795680001, "durationMs": 6140.2, "ageSeconds": 42, "settled": true,
+  "requestCount": 36, "spanCount": 180,
+  "requests": [
+    { "index": 1, "span": 0, "method": "GET", "path": "/v1/health/check", "status": 200, "startMs": 0, "durationMs": 6140.2,
+      "function": "testhelper-v1-HealthFunction-AbC123", "functionMs": 6120.0, "invocationMs": 6118.4, "coldStart": false },
+    { "index": 2, "span": 6, "method": "GET", "path": "/v1/lists/clear", "status": 200, "startMs": 41.3, "durationMs": 88.0,
+      "function": "testhelper-v1-ListsFunction-XyZ789", "functionMs": 61.2, "initMs": 412.5, "invocationMs": 58.0, "coldStart": true }
+  ],
+  "clues": ["Slowest request: GET /v1/health/check, 6140 ms.", "3 of 36 requests started a new Lambda instance (cold start), 1240 ms of initialising in all."],
+  "spans": [ { "index": 0, "parent": null, "depth": 0, "name": "testhelper-v1-v1/live", "kind": "api", "startMs": 0, "durationMs": 6140.2, "method": "GET", "path": "/v1/health/check", "status": 200 } ],
+  "links": { "page": "{BASE_URL}/trace/get?ref=…&format=html", "data": "{BASE_URL}/trace/get?ref=…" }
+}
+```
+
+Read `requests` for one row per API request (`coldStart`, `initMs`, `failed`), `clues` for what stands out, and `spans` for the full tree (`parent` is the index of the parent span; `kind` is `api`, `lambda`, `function`, `init`, `invocation`, `overhead` or `subsegment`).
+
+Response (200, too early — NOT an error): `{ "traceId": "…", "pending": true, "retryAfterSeconds": 5, … }`. A trace is written as its request finishes and takes a few seconds to arrive: ask again, or pass `wait=10`. The page refreshes itself until the trace has arrived and settled (`settled` is `false` while segments may still be arriving, the first 30 s). 404 if there is no such trace from this deployment: older than 30 days, from a request that was not traced, or another application's.
+
+---
+
+### 3.14 Discovery documents
 
 | URL | What |
 |---|---|
 | `{BASE_URL}` | Service index (JSON) |
 | `{BASE_URL}/<service>` | Actions for one service (JSON) |
+| `{BASE_URL}/health/get` | Which build is deployed (also the `X-Build` header on every response) |
 | `{BASE_URL}/openapi.json` | OpenAPI 3.2.1: every parameter, response schema and error |
 | `{BASE_URL}/openapi-3.0.json` | The same in OpenAPI 3.0.3, for tools that do not read 3.2 yet (lists/push and perf/assert free-form parameters appear as examples) |
 | `{ROOT_URL}/.well-known/openapi.json` | OpenAPI 3.2.1 (well-known location) |
@@ -2028,7 +2488,124 @@ EACH VIRTUAL USER
 
 For variety, generate each line with several voices (`voice=random&seed=1`, `seed=2`, …): each is a different `ref`, and each is repeatable.
 
+### 4.17 A two-way spoken conversation: say, capture the reply, listen, assert
+
+The test speaks with `voice/say`, the system under test answers in audio, and `voice/listen` + `voice/find` tell the test what it said. The only part that is yours is the middle: sending audio to your system and collecting the audio it sends back.
+
+```python
+import base64, requests
+API = "{BASE_URL}"
+
+def say(text, **kw):                       # words -> raw samples for the voice stream
+    r = requests.get(API + "/voice/say", params={"text": text, "format": "pcm", "hz": 16000, **kw}).json()
+    return base64.b64decode(r["data"]), r["ref"]
+
+def heard(chunks, hz=24000, **question):   # reply audio -> an answer from voice/find
+    body = {"chunks": chunks, "format": "pcm", "hz": hz, **question}
+    r = requests.post(API + "/voice/find", json=body).json()
+    while r["pending"]:                    # transcription takes a few seconds: ask again by ref
+        r = requests.post(API + "/voice/find", json={"ref": r["ref"], **question}).json()
+    return r
+
+# --- turn 1 -----------------------------------------------------------------
+pcm, said_ref = say("When is my next appointment? [pause 800ms]")
+reply_chunks = talk_to_my_voice_bot(pcm)   # YOUR code: send the samples, collect the base64 audio pieces it returns
+
+r = heard(reply_chunks, left="appointment is on", right="with")
+assert r["found"], (r["text"], r.get("closest"), r.get("hint"))
+when = r["values"][0]                      # e.g. "Tuesday the 24th at 3 p.m."
+print("said", said_ref, "heard", r["ref"], "->", when)     # log both refs with the run
+
+# --- turn 2: use what was heard in the next thing said -----------------------
+pcm, _ = say("Can you move it to the day after?")
+r = heard(talk_to_my_voice_bot(pcm), text="Wednesday the 25th")
+assert r["found"], (r["text"], r["uncertain"])
+```
+
+* `reply_chunks` is a list of base64 strings, in the order they arrived. Speech-to-speech models stream their audio this way (Amazon Nova Sonic: the `content` of each `audioOutput` event, 24000 Hz 16-bit mono). If you have a file instead, POST its bytes with `Content-Type: application/octet-stream`.
+* **Always loop on `pending`.** One request usually is enough for a short reply, but never assume it.
+* Assert with `voice/find` (`found`, `values`), not by comparing `text` to a string.
+* When an assertion fails, look at `closest`, `uncertain` and `confidence` first: the transcriber may have misheard a word the system said correctly. Then open `{BASE_URL}/voice/get?ref=<heard ref>&play=true` and listen to the reply yourself.
+* Keep the evidence of a failure: `GET {BASE_URL}/voice/save?key=<name>&ref=<heard ref>` (heard audio is otherwise deleted after 30 days).
+* Timing: `startMs` of a match is when it was said within the reply; `speechStartMs` from `voice/listen` is how long the reply ran before its first word.
+* In a load test, many virtual users often receive the identical reply audio. It is transcribed once; every other user gets the stored words (`cached: true`).
+
 ---
+
+### 4.18 Reconcile: was everything the test submitted processed, and nothing else?
+
+```
+1. GET /v1/lists/codes                                         → run = rand10
+   key = "recon-<run>"
+2. For each record the test submits (sign-up, order, email into the app):
+   GET /v1/recon/expect?key=<key>&value=<email or reference>&ignorecase=true
+      (add fields to check later: &amount=120.00&status=lodged)
+   — or after submitting a batch: POST /v1/recon/expect?key=<key>&ignorecase=true  with one value per line
+3. For each record the test sees processed (an email caught by mail/pop, a webhook,
+   a row returned by the app's API):
+   GET /v1/recon/confirm?key=<key>&value=<the same value>&amount=<what the app shows>
+4. When submitting is done:
+   GET /v1/recon/get?key=<key>&wait=20&strict=true
+   → 200 with reconciled: true  = every record processed, correctly, and nothing extra
+   → 412: read outstanding / unexpected / mismatched, then
+   GET /v1/recon/list?key=<key>&status=unreconciled
+      short       not processed (shortBy of them; any of the candidates)
+      over        processed but never submitted, or processed twice (overBy)
+      mismatched  processed wrongly: see differences
+```
+
+* An asynchronous pipeline may take longer than 20 s: repeat step 4 (without `strict`) until `outstanding` stops falling, then gate with `strict=true`.
+* A record submitted twice is expected twice and needs two confirmations; a message the system sent twice shows as `over`.
+* Reconcile on a value the system carries through unchanged; if it issues its own ids, put a `rand10` token in a field it keeps (subject, reference) and reconcile on the token.
+
+### 4.19 Reconcile under load, with checker scripts and processing lag
+
+```
+Virtual users (many):
+   submit a record to the system under test
+   GET /v1/recon/expect?key=<key>&value=<token>          (wait=0 — nothing here waits)
+
+Where the system reports what it processed (a webhook, an email, a queue):
+   GET /v1/recon/confirm?key=<key>&value=<token>&perfkey=<key>.lag
+
+Where nothing reports it, checker scripts (a few) loop:
+   GET /v1/recon/cyclepop?key=<key>
+   → exhausted: true  → sleep a few seconds, loop
+   → value            → look the value up in the system under test
+                        found: GET /v1/recon/confirm?key=<key>&value=<value>&perfkey=<key>.lag
+                        not found yet: loop (it comes round again after the others)
+
+After the run:
+   GET /v1/recon/get?key=<key>&wait=20&grace=30&sla=300
+      → outstanding, overdue (expected more than sla s ago, still not processed), reconciled
+   GET /v1/perf/stats?key=<key>.lag&p=95,99                 → processing lag percentiles (ms)
+   GET /v1/perf/assert?key=<key>.lag&p95lt=60000&strict=true
+   GET /v1/recon/get?key=<key>&strict=true&grace=30         → 412 unless reconciled
+```
+
+* `grace=30`: a confirmation can land a moment before its expectation is written; its group is `over` only briefly, and `grace` keeps that from failing the gate.
+* Every add is atomic and writes are spread over many partitions, so thousands of `expect`/`confirm` calls a second from many load generators are fine. Send batches as a POST body when a script can buffer them.
+* Keep `wait` for the end of the run; during the run every call should return at once.
+
+### 4.20 Full values against masked ones (only the last digits are shown)
+
+A system sends each participant a text that shows only the last 4 digits of their id (`Participant number: xxxxx9094`). The test knows the full ids. Several participants can share the same last 4 digits.
+
+```
+1. POST /v1/recon/expect?key=<key>&suffix=4          body: the full ids, one per line
+      → suffix=4 on the FIRST write: every value is matched on its last 4 characters
+2. POST /v1/recon/confirm?key=<key>                   body: what each text shows, one per line
+      (xxxxx9094, or just 9094 — both match on 9094)
+3. GET /v1/recon/get?key=<key>
+      → outstanding = texts not received, in records; ambiguousGroups = keys shared by several ids
+4. GET /v1/recon/list?key=<key>&status=unreconciled&limit=1000
+      → { "value": "7377", "status": "short", "expected": 3, "confirmed": 2, "shortBy": 1,
+          "candidates": ["609857377", "609887377", "609937377"] }
+        = one of these three did not receive a text
+```
+
+* Two participants sharing `1262` with one text arriving is `short` by 1 — never `matched`. With both texts it is `reconciledByCount`.
+* The candidates are the most that can be said: the text does not say which participant it was for.
 
 ## 5. Errors and troubleshooting
 
@@ -2049,6 +2626,26 @@ For variety, generate each line with several voices (`voice=random&seed=1`, `see
 | 400 from `voice/say` naming a voice and `allowed` engines | That voice does not exist on the engine asked for | Pick an `allowed` engine, or another `voice` (`voice/voices?engine=…`) |
 | The `play=true` page shows a Play button instead of playing | The browser blocks sound until the visitor clicks something on the site | Click Play once; in automation start Chromium with `--autoplay-policy=no-user-gesture-required` |
 | 404 from `voice/get?ref=…` | The utterance expired (30 days after last use) | Call `voice/say` again; pin what must be kept with `voice/save` |
+| `voice/listen` (or `find`, `compare`) returns `pending: true` | Transcription was not finished within `wait` | Call the `listenUrl`, or send the request again with the `ref`, until `pending` is `false` |
+| 400 from `voice/listen`: `'hz' is required with format=pcm` | Raw samples do not say how fast they were recorded | Add `hz=` (Amazon Nova Sonic emits 24000; telephone audio is 8000) |
+| 400 from `voice/listen`: `Cannot tell what this audio is` | Raw samples sent without saying so | Add `format=pcm&hz=<rate>` (or `format=mulaw` / `alaw`) |
+| 400 from `voice/listen`: `does not take OGG audio` (or FLAC, WEBM, M4A, AMR) | Only audio whose length can be counted is transcribed | Convert to WAV: `ffmpeg -i in.webm -ar 16000 -ac 1 out.wav`; in a browser, record samples with the Web Audio API rather than `MediaRecorder` |
+| 400 `The body is not audio this service can read` | Raw bytes sent with a `Content-Type` such as `audio/wav` | Send raw bytes with `Content-Type: application/octet-stream`, or base64, or JSON `audio` / `chunks` |
+| 422 from `voice/listen` with `state: "failed"` | The transcriber could not use the audio (`detail` says why) — often an MP3 shorter than half a second | Play it: `voice/get?ref=<ref>&play=true`; send a longer stretch, or WAV / raw samples (short ones are padded for you) |
+| 429 from `voice/listen` with `budgetExhausted` | The deployment's daily listening budget is used up | Audio already heard still works (same audio, or its `ref`); new audio works again after `retryAfterSeconds` |
+| `voice/find` says `found: false` but you can hear the words | The transcriber wrote them differently, or misheard | Read `closest`, `uncertain` and `normalised`; try `fuzzy=true`, a `regex` with the spellings you accept, or assert on other words |
+| The transcript garbles speech that sounds fine | Wrong `hz` for raw samples (speech too fast or slow), or the wrong `language` | Play `playUrl` to check the speed; send the true sample rate; set `language` |
+| `voice/find` matches nothing with `exact=true` | `exact` searches capitals and punctuation as written | Drop `exact`, or add `ignorecase=true` |
+| 400 `'wait' is not a parameter of recon/expect` (or `strict`, `fields`, `status`…) | A `recon/get` URL was edited into `expect`/`confirm`, where every other parameter is a field | Remove the parameter |
+| 400 `key '…' already matches values with ignorecase=…` (or `already matches on the last 4 characters`) | The first write to the key chose another `ignorecase` or `suffix` | Use a new key, or `recon/clear` it first |
+| 400 `key '…' was written by an earlier version of recon` | The key was made before recon matched by count | Use a new key, or `recon/clear` it |
+| 400 `status 'outstanding' is now 'short'` (or `'unexpected'` → `'over'`) | `recon/list` lists groups by their state | Use `short`, `over`, or `unreconciled` for both plus `mismatched` |
+| 404 from `recon/get?value=…` | No record has that match key — or the value differs in case/spaces on a case-sensitive key, or in the last N characters on a `suffix` key | Check the key and value; `ignorecase=true` for email addresses; add `wait=` to wait for it |
+| 412 from `recon/get` | `strict=true` and not reconciled | Read the counts; `recon/list?status=unreconciled` |
+| Almost everything `unexpected` and `outstanding`, little `matched` | The two sides send the value differently (case, spaces, `+` as a space, a prefix, a mask) | Send the same value on both sides; `ignorecase=true` for emails; `value64` for `+`; `suffix=N` when one side shows only the last N characters |
+| A group is `short` with several `candidates` | Several records share the key and fewer confirmations arrived | One of the candidates is missing; the service cannot say which. Match on more characters if both sides have them |
+| `reconciled: false` with `outstanding: 0` | Records are `mismatched` or `unexpected` (an `over` group: sent twice, or never submitted) — or nothing was expected at all | Read `mismatched`, `unexpected` and `expected`; consider `grace=` under load |
+| `mismatched` where the values look the same | Text differs (`$120` vs `120`, `Lodged` vs `lodged`) — only numbers compare as numbers | Send the field in the same form on both sides |
 | 400 from `perf/assert` naming a check | Unknown statistic or operator (e.g. `avglt`, `p95lte`) | Use `mean`, and `lt`/`le`/`gt`/`ge`/`eq` |
 | 429 with `gatewayError: THROTTLED` | Too many requests | Back off and retry |
 | 504 / timeout | Gateway 29 s limit | Keep `wait` ≤ 20 (≤ 25 for import) |
@@ -2124,6 +2721,12 @@ For variety, generate each line with several voices (`voice=random&seed=1`, `see
 * **Consuming** — an action that hands an item out once and moves on (`pop`). `cyclepop` hands each item out once per pass, then goes round again. Non-consuming actions (`random`, `get`, `list`) can be repeated.
 * **Pointer** — the position in a queue that `pop` and `cyclepop` read next (`nextPop` in `lists/list`). `reset` moves it back to 1; `clear` deletes the queue; `import` replaces the queue and resets the pointer.
 * **Ref** — an opaque handle issued by the API (an import ref looks like `20261010T212514Z-pnnwps`, an utterance ref like `v7k2m9q4x1ab`). Copy it exactly; never construct one. Import refs are tied to one key and one format.
+* **Reconciliation set** — a `recon` key: the values a test expects to be processed, and those it saw processed. One per run.
+* **Match key** — what `recon` counts records under: the whole value, or its last N characters with `suffix=N`.
+* **Group** — one match key in `recon` and every record that shares it: `matched`, `mismatched`, `reconciledByCount` (balances, but the pairing is unknown), `short` or `over`.
+* **Outstanding / unexpected** — `recon` record counts: expected and not confirmed (total `shortBy`) / confirmed and not expected (total `overBy`).
+* **Candidates** — the full values the expected side gave under a match key: for a short group, the records one of which is missing.
+* **Processing lag** — in `recon`, the time from a key's first expectation to the confirmation that pairs it (`latencyMs`).
 * **Utterance** — one piece of generated speech from `voice/say`, stored under its `ref`. The same request is always the same utterance.
 * **Tag** — a direction in square brackets inside `voice/say` text, e.g. `[anxious]` or `[pause]`. Never spoken.
 * **Registered handset** — a real phone running the capture app, able to receive real texts and post them to `sms/receive`.

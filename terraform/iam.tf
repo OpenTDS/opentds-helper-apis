@@ -136,6 +136,20 @@ locals {
       },
     ]
 
+    # recon also feeds processing lag into a perf key in-process (perfkey=).
+    recon = [
+      {
+        Effect   = "Allow"
+        Action   = ["dynamodb:GetItem", "dynamodb:BatchGetItem", "dynamodb:PutItem", "dynamodb:UpdateItem", "dynamodb:DeleteItem", "dynamodb:BatchWriteItem", "dynamodb:Query"]
+        Resource = [aws_dynamodb_table.recon.arn, "${aws_dynamodb_table.recon.arn}/index/*"]
+      },
+      {
+        Effect   = "Allow"
+        Action   = ["dynamodb:UpdateItem"]
+        Resource = [local.t.perf]
+      },
+    ]
+
     sms = [
       {
         Effect   = "Allow"
@@ -155,6 +169,14 @@ locals {
         Action   = ["polly:SynthesizeSpeech", "polly:DescribeVoices"]
         Resource = ["*"]
       },
+      # A transcription job reads its audio from, and writes its transcript
+      # to, the voice bucket with this role's own S3 permissions (below);
+      # Transcribe needs none of its own.
+      {
+        Effect   = "Allow"
+        Action   = ["transcribe:StartTranscriptionJob", "transcribe:GetTranscriptionJob", "transcribe:DeleteTranscriptionJob"]
+        Resource = ["*"]
+      },
       {
         Effect   = "Allow"
         Action   = ["s3:GetObject", "s3:PutObject", "s3:DeleteObject"]
@@ -169,6 +191,31 @@ locals {
         Effect   = "Allow"
         Action   = ["dynamodb:GetItem", "dynamodb:UpdateItem"]
         Resource = [local.t.voice]
+      },
+    ]
+
+    # health/check calls the API over HTTPS like any caller: its own table, and
+    # read access to the deployment's function configurations (builds).
+    health = [
+      {
+        Effect   = "Allow"
+        Action   = ["dynamodb:GetItem", "dynamodb:PutItem", "dynamodb:DeleteItem"]
+        Resource = [aws_dynamodb_table.health.arn]
+      },
+      {
+        Effect   = "Allow"
+        Action   = ["lambda:GetFunctionConfiguration"]
+        Resource = ["arn:${local.partition}:lambda:${local.region}:${local.account}:function:${var.name_prefix}-*"]
+      },
+    ]
+
+    # trace/get reads X-Ray (BatchGetTraces has no resource-level permissions)
+    # and shows only this deployment's segments.
+    trace = [
+      {
+        Effect   = "Allow"
+        Action   = ["xray:BatchGetTraces"]
+        Resource = ["*"]
       },
     ]
 
@@ -197,6 +244,12 @@ resource "aws_iam_role_policy_attachment" "logs" {
   for_each   = aws_iam_role.this
   role       = each.value.name
   policy_arn = "arn:${local.partition}:iam::aws:policy/service-role/AWSLambdaBasicExecutionRole"
+}
+
+resource "aws_iam_role_policy_attachment" "xray" {
+  for_each   = var.tracing ? aws_iam_role.this : {}
+  role       = each.value.name
+  policy_arn = "arn:${local.partition}:iam::aws:policy/AWSXRayDaemonWriteAccess"
 }
 
 resource "aws_iam_role_policy" "service" {

@@ -1,7 +1,8 @@
 AWSTemplateFormatVersion: '2010-09-09'
 Description: >-
   Test Helper API v1 - public helper endpoints for end-to-end and load test
-  automation (lists, names, lock, mail, sms, webhook, totp, qr, perf, voice) served at
+  automation (lists, names, lock, mail, sms, webhook, totp, qr, perf, recon, voice,
+  health, trace) served at
   https://<ApiHostLabel>.<Domain>/v1 with discovery documents at the domain root.
 
 # =============================================================================
@@ -21,7 +22,7 @@ Description: >-
 #
 #  API GATEWAY DEPLOYMENTS: routes are proxy resources, so adding an ACTION
 #  needs only a code change. Adding or removing a SERVICE (resources/methods)
-#  needs the V1Deployment logical id bumped (V1DeploymentC -> V1DeploymentD),
+#  needs the V1Deployment logical id bumped (V1DeploymentF -> V1DeploymentG),
 #  or the stage keeps serving the old routes with no error.
 #
 #  NO AUTHENTICATION by design. Protection is: stage throttling, the mail
@@ -198,6 +199,52 @@ Parameters:
       stored audio is always served. 0 switches synthesis off. At list prices
       (USD 16 neural, USD 30 generative per million characters) the default is
       at most about USD 0.40 to 0.75 a day.
+  VoiceLanguage:
+    Type: String
+    Default: en-AU
+    AllowedPattern: '^([a-z]{2,3}-[A-Z]{2}|auto)$'
+    Description: >-
+      The language voice/listen expects to hear when the caller names none: an
+      Amazon Transcribe language code such as en-AU, or auto to have each
+      recording's language identified.
+  VoiceDailyListenSeconds:
+    Type: Number
+    Default: 1800
+    MinValue: 0
+    Description: >-
+      Seconds of audio voice/listen may send to Amazon Transcribe per UTC day.
+      Transcription is billed by the second and the endpoint is open, so new
+      listening is capped; audio already transcribed is always served. 0
+      switches listening off.
+
+  Tracing:
+    Type: String
+    Default: 'true'
+    AllowedValues: ['true', 'false']
+    Description: >-
+      AWS X-Ray tracing of the v1 API stage and every function. Billed per
+      trace recorded (the default sampling rule keeps 1 request a second plus
+      5% of the rest; health calls are always kept); no standing cost.
+      health/get and health/check return the URL of their trace.
+  BuildId:
+    Type: String
+    Default: dev
+    AllowedPattern: '^[A-Za-z0-9._+-]{1,64}$'
+    Description: >-
+      Build identifier stamped on every function and returned as the X-Build
+      header and by health/get. deploy.ps1 passes the UTC deploy time
+      (yyyymmdd.hhmm); dev means the stack was deployed without a stamp.
+  BuildCommit:
+    Type: String
+    Default: ''
+    Description: >-
+      Source commit of this build (deploy.ps1 fills it in when the source is a
+      git working copy; a trailing + means uncommitted changes). May be empty.
+  DeployedTime:
+    Type: String
+    Default: '0'
+    AllowedPattern: '^[0-9]{1,12}$'
+    Description: When this build was deployed, UTC epoch seconds (deploy.ps1 fills it in).
 
 Metadata:
   AWS::CloudFormation::Interface:
@@ -215,10 +262,15 @@ Metadata:
       - Label: { default: Text messages (SMS) }
         Parameters: [SmsDeviceKeys, SmsSendAllowedNumbers, SmsRegion, SmsSendIntervalSeconds]
       - Label: { default: Voice }
-        Parameters: [VoiceRegion, VoiceName, VoiceEngine, VoiceDailyCharacters]
+        Parameters: [VoiceRegion, VoiceName, VoiceEngine, VoiceDailyCharacters, VoiceLanguage, VoiceDailyListenSeconds]
+      - Label: { default: Build (filled in by deploy.ps1) }
+        Parameters: [BuildId, BuildCommit, DeployedTime]
+      - Label: { default: Tracing }
+        Parameters: [Tracing]
 
 Conditions:
   MakeApexSite: !Equals [!Ref ServeApexSite, 'true']
+  UseTracing: !Equals [!Ref Tracing, 'true']
   MakeSesIdentity: !Equals [!Ref CreateSesIdentity, 'true']
   MakeMailDns: !Equals [!Ref ManageMailDnsRecords, 'true']
   MakeSpfDmarc: !Equals [!Ref ManageSpfDmarcRecords, 'true']
@@ -449,6 +501,33 @@ Resources:
         AttributeName: ttl
         Enabled: true
 
+  # recon: one item per reconciled value (both sides), plus sharded counter and
+  # settings items. The ByState index (gk = <key>#<state>#<shard>, gt = ms it
+  # entered the state) serves recon/list and recon/cyclepop without a Scan.
+  ReconTable:
+    Type: AWS::DynamoDB::Table
+    DeletionPolicy: Retain
+    UpdateReplacePolicy: Retain
+    Properties:
+      BillingMode: PAY_PER_REQUEST
+      AttributeDefinitions:
+        - { AttributeName: PK, AttributeType: S }
+        - { AttributeName: SK, AttributeType: S }
+        - { AttributeName: gk, AttributeType: S }
+        - { AttributeName: gt, AttributeType: N }
+      KeySchema:
+        - { AttributeName: PK, KeyType: HASH }
+        - { AttributeName: SK, KeyType: RANGE }
+      GlobalSecondaryIndexes:
+        - IndexName: ByState
+          KeySchema:
+            - { AttributeName: gk, KeyType: HASH }
+            - { AttributeName: gt, KeyType: RANGE }
+          Projection: { ProjectionType: ALL }
+      TimeToLiveSpecification:
+        AttributeName: ttl
+        Enabled: true
+
   # Service = a number's last nine digits; Received = epoch-ms sort key. The
   # ByDay index lets sms/list sweep every number with a Query, not a Scan.
   SmsTable:
@@ -479,6 +558,22 @@ Resources:
     Type: AWS::DynamoDB::Table
     DeletionPolicy: Retain
     UpdateReplacePolicy: Retain
+    Properties:
+      BillingMode: PAY_PER_REQUEST
+      AttributeDefinitions:
+        - { AttributeName: PK, AttributeType: S }
+        - { AttributeName: SK, AttributeType: S }
+      KeySchema:
+        - { AttributeName: PK, KeyType: HASH }
+        - { AttributeName: SK, KeyType: RANGE }
+      TimeToLiveSpecification:
+        AttributeName: ttl
+        Enabled: true
+
+  # health/check's cache, lease and private probe namespace. Disposable: not
+  # retained, nothing in it is user data.
+  HealthTable:
+    Type: AWS::DynamoDB::Table
     Properties:
       BillingMode: PAY_PER_REQUEST
       AttributeDefinitions:
@@ -560,7 +655,9 @@ Resources:
 
   # voice audio. generated/ is the content-addressed store behind voice/say:
   # it expires 30 days after an utterance's LAST use (voice_store rewrites one
-  # in place when it is used again). saved/ is kept until deleted.
+  # in place when it is used again). saved/ is kept until deleted. heard/ is
+  # what was given to voice/listen and what was made of it: evidence from a
+  # test run, holding whatever the system under test said, gone after 30 days.
   VoiceBucket:
     Type: AWS::S3::Bucket
     DeletionPolicy: Retain
@@ -580,6 +677,10 @@ Resources:
           - Id: expire-generated-utterances
             Status: Enabled
             Prefix: generated/
+            ExpirationInDays: 30
+          - Id: expire-heard-audio
+            Status: Enabled
+            Prefix: heard/
             ExpirationInDays: 30
           - Id: abort-incomplete-uploads
             Status: Enabled
@@ -807,6 +908,7 @@ Resources:
             Action: sts:AssumeRole
       ManagedPolicyArns:
         - !Sub 'arn:${AWS::Partition}:iam::aws:policy/service-role/AWSLambdaBasicExecutionRole'
+        - !If [UseTracing, !Sub 'arn:${AWS::Partition}:iam::aws:policy/AWSXRayDaemonWriteAccess', !Ref AWS::NoValue]
       Policies:
         - PolicyName: service
           PolicyDocument:
@@ -846,6 +948,7 @@ Resources:
             Action: sts:AssumeRole
       ManagedPolicyArns:
         - !Sub 'arn:${AWS::Partition}:iam::aws:policy/service-role/AWSLambdaBasicExecutionRole'
+        - !If [UseTracing, !Sub 'arn:${AWS::Partition}:iam::aws:policy/AWSXRayDaemonWriteAccess', !Ref AWS::NoValue]
       Policies:
         - PolicyName: service
           PolicyDocument:
@@ -875,6 +978,7 @@ Resources:
             Action: sts:AssumeRole
       ManagedPolicyArns:
         - !Sub 'arn:${AWS::Partition}:iam::aws:policy/service-role/AWSLambdaBasicExecutionRole'
+        - !If [UseTracing, !Sub 'arn:${AWS::Partition}:iam::aws:policy/AWSXRayDaemonWriteAccess', !Ref AWS::NoValue]
       Policies:
         - PolicyName: service
           PolicyDocument:
@@ -916,6 +1020,7 @@ Resources:
             Action: sts:AssumeRole
       ManagedPolicyArns:
         - !Sub 'arn:${AWS::Partition}:iam::aws:policy/service-role/AWSLambdaBasicExecutionRole'
+        - !If [UseTracing, !Sub 'arn:${AWS::Partition}:iam::aws:policy/AWSXRayDaemonWriteAccess', !Ref AWS::NoValue]
       Policies:
         - PolicyName: service
           PolicyDocument:
@@ -945,6 +1050,7 @@ Resources:
             Action: sts:AssumeRole
       ManagedPolicyArns:
         - !Sub 'arn:${AWS::Partition}:iam::aws:policy/service-role/AWSLambdaBasicExecutionRole'
+        - !If [UseTracing, !Sub 'arn:${AWS::Partition}:iam::aws:policy/AWSXRayDaemonWriteAccess', !Ref AWS::NoValue]
       Policies:
         - PolicyName: service
           PolicyDocument:
@@ -966,6 +1072,7 @@ Resources:
             Action: sts:AssumeRole
       ManagedPolicyArns:
         - !Sub 'arn:${AWS::Partition}:iam::aws:policy/service-role/AWSLambdaBasicExecutionRole'
+        - !If [UseTracing, !Sub 'arn:${AWS::Partition}:iam::aws:policy/AWSXRayDaemonWriteAccess', !Ref AWS::NoValue]
       Policies:
         - PolicyName: service
           PolicyDocument:
@@ -987,6 +1094,7 @@ Resources:
             Action: sts:AssumeRole
       ManagedPolicyArns:
         - !Sub 'arn:${AWS::Partition}:iam::aws:policy/service-role/AWSLambdaBasicExecutionRole'
+        - !If [UseTracing, !Sub 'arn:${AWS::Partition}:iam::aws:policy/AWSXRayDaemonWriteAccess', !Ref AWS::NoValue]
       Policies:
         - PolicyName: service
           PolicyDocument:
@@ -1008,6 +1116,7 @@ Resources:
             Action: sts:AssumeRole
       ManagedPolicyArns:
         - !Sub 'arn:${AWS::Partition}:iam::aws:policy/service-role/AWSLambdaBasicExecutionRole'
+        - !If [UseTracing, !Sub 'arn:${AWS::Partition}:iam::aws:policy/AWSXRayDaemonWriteAccess', !Ref AWS::NoValue]
       Policies:
         - PolicyName: service
           PolicyDocument:
@@ -1015,6 +1124,34 @@ Resources:
             Statement:
               - Effect: Allow
                 Action: [dynamodb:GetItem, dynamodb:BatchGetItem, dynamodb:PutItem, dynamodb:UpdateItem, dynamodb:DeleteItem, dynamodb:BatchWriteItem, dynamodb:Query]
+                Resource:
+                  - !GetAtt PerfTable.Arn
+
+  # recon also feeds processing lag into a perf key in-process (perfkey=).
+  ReconRole:
+    Type: AWS::IAM::Role
+    Properties:
+      AssumeRolePolicyDocument:
+        Version: '2012-10-17'
+        Statement:
+          - Effect: Allow
+            Principal: { Service: lambda.amazonaws.com }
+            Action: sts:AssumeRole
+      ManagedPolicyArns:
+        - !Sub 'arn:${AWS::Partition}:iam::aws:policy/service-role/AWSLambdaBasicExecutionRole'
+        - !If [UseTracing, !Sub 'arn:${AWS::Partition}:iam::aws:policy/AWSXRayDaemonWriteAccess', !Ref AWS::NoValue]
+      Policies:
+        - PolicyName: service
+          PolicyDocument:
+            Version: '2012-10-17'
+            Statement:
+              - Effect: Allow
+                Action: [dynamodb:GetItem, dynamodb:BatchGetItem, dynamodb:PutItem, dynamodb:UpdateItem, dynamodb:DeleteItem, dynamodb:BatchWriteItem, dynamodb:Query]
+                Resource:
+                  - !GetAtt ReconTable.Arn
+                  - !Sub '${ReconTable.Arn}/index/*'
+              - Effect: Allow
+                Action: [dynamodb:UpdateItem]
                 Resource:
                   - !GetAtt PerfTable.Arn
 
@@ -1029,6 +1166,7 @@ Resources:
             Action: sts:AssumeRole
       ManagedPolicyArns:
         - !Sub 'arn:${AWS::Partition}:iam::aws:policy/service-role/AWSLambdaBasicExecutionRole'
+        - !If [UseTracing, !Sub 'arn:${AWS::Partition}:iam::aws:policy/AWSXRayDaemonWriteAccess', !Ref AWS::NoValue]
       Policies:
         - PolicyName: service
           PolicyDocument:
@@ -1055,6 +1193,7 @@ Resources:
             Action: sts:AssumeRole
       ManagedPolicyArns:
         - !Sub 'arn:${AWS::Partition}:iam::aws:policy/service-role/AWSLambdaBasicExecutionRole'
+        - !If [UseTracing, !Sub 'arn:${AWS::Partition}:iam::aws:policy/AWSXRayDaemonWriteAccess', !Ref AWS::NoValue]
       Policies:
         - PolicyName: service
           PolicyDocument:
@@ -1062,6 +1201,13 @@ Resources:
             Statement:
               - Effect: Allow
                 Action: [polly:SynthesizeSpeech, polly:DescribeVoices]
+                Resource:
+                  - '*'
+              # A transcription job reads its audio from, and writes its
+              # transcript to, the voice bucket with this role's own S3
+              # permissions (below); Transcribe needs none of its own.
+              - Effect: Allow
+                Action: [transcribe:StartTranscriptionJob, transcribe:GetTranscriptionJob, transcribe:DeleteTranscriptionJob]
                 Resource:
                   - '*'
               - Effect: Allow
@@ -1077,6 +1223,58 @@ Resources:
                 Resource:
                   - !GetAtt VoiceTable.Arn
 
+  # health/check calls the API over HTTPS like any caller, so it needs only its
+  # own table and read access to the stack's function configurations (builds).
+  HealthRole:
+    Type: AWS::IAM::Role
+    Properties:
+      AssumeRolePolicyDocument:
+        Version: '2012-10-17'
+        Statement:
+          - Effect: Allow
+            Principal: { Service: lambda.amazonaws.com }
+            Action: sts:AssumeRole
+      ManagedPolicyArns:
+        - !Sub 'arn:${AWS::Partition}:iam::aws:policy/service-role/AWSLambdaBasicExecutionRole'
+        - !If [UseTracing, !Sub 'arn:${AWS::Partition}:iam::aws:policy/AWSXRayDaemonWriteAccess', !Ref AWS::NoValue]
+      Policies:
+        - PolicyName: service
+          PolicyDocument:
+            Version: '2012-10-17'
+            Statement:
+              - Effect: Allow
+                Action: [dynamodb:GetItem, dynamodb:PutItem, dynamodb:DeleteItem]
+                Resource:
+                  - !GetAtt HealthTable.Arn
+              - Effect: Allow
+                Action: [lambda:GetFunctionConfiguration]
+                Resource:
+                  - !Sub 'arn:${AWS::Partition}:lambda:${AWS::Region}:${AWS::AccountId}:function:${AWS::StackName}-*'
+
+  # trace/get reads X-Ray (BatchGetTraces has no resource-level permissions) and
+  # shows only this stack's segments.
+  TraceRole:
+    Type: AWS::IAM::Role
+    Properties:
+      AssumeRolePolicyDocument:
+        Version: '2012-10-17'
+        Statement:
+          - Effect: Allow
+            Principal: { Service: lambda.amazonaws.com }
+            Action: sts:AssumeRole
+      ManagedPolicyArns:
+        - !Sub 'arn:${AWS::Partition}:iam::aws:policy/service-role/AWSLambdaBasicExecutionRole'
+        - !If [UseTracing, !Sub 'arn:${AWS::Partition}:iam::aws:policy/AWSXRayDaemonWriteAccess', !Ref AWS::NoValue]
+      Policies:
+        - PolicyName: service
+          PolicyDocument:
+            Version: '2012-10-17'
+            Statement:
+              - Effect: Allow
+                Action: [xray:BatchGetTraces]
+                Resource:
+                  - '*'
+
   StatelessRole:
     Type: AWS::IAM::Role
     Properties:
@@ -1088,6 +1286,7 @@ Resources:
             Action: sts:AssumeRole
       ManagedPolicyArns:
         - !Sub 'arn:${AWS::Partition}:iam::aws:policy/service-role/AWSLambdaBasicExecutionRole'
+        - !If [UseTracing, !Sub 'arn:${AWS::Partition}:iam::aws:policy/AWSXRayDaemonWriteAccess', !Ref AWS::NoValue]
 
   # ===========================================================================
   # LAMBDA FUNCTIONS - all from the one code package in src/.
@@ -1102,8 +1301,13 @@ Resources:
       Role: !GetAtt ListsRole.Arn
       MemorySize: 512
       Timeout: 29
+      TracingConfig:
+        Mode: !If [UseTracing, Active, PassThrough]
       Environment:
         Variables:
+          BUILD_ID: !Ref BuildId
+          BUILD_COMMIT: !Ref BuildCommit
+          DEPLOYED_TIME: !Ref DeployedTime
           BASE_URL: !Sub 'https://${ApiHostLabel}.${Domain}/v1'
           LISTS_TABLE: !Ref ListsTable
           VARS_TABLE: !Ref ListsVarsTable
@@ -1122,8 +1326,13 @@ Resources:
       Role: !GetAtt ListsWorkerRole.Arn
       MemorySize: 1769
       Timeout: 900
+      TracingConfig:
+        Mode: !If [UseTracing, Active, PassThrough]
       Environment:
         Variables:
+          BUILD_ID: !Ref BuildId
+          BUILD_COMMIT: !Ref BuildCommit
+          DEPLOYED_TIME: !Ref DeployedTime
           LISTS_TABLE: !Ref ListsTable
           IMPORT_BUCKET: !Ref ListsImportBucket
 
@@ -1144,8 +1353,13 @@ Resources:
       Role: !GetAtt MailRole.Arn
       MemorySize: 1769
       Timeout: 29
+      TracingConfig:
+        Mode: !If [UseTracing, Active, PassThrough]
       Environment:
         Variables:
+          BUILD_ID: !Ref BuildId
+          BUILD_COMMIT: !Ref BuildCommit
+          DEPLOYED_TIME: !Ref DeployedTime
           BASE_URL: !Sub 'https://${ApiHostLabel}.${Domain}/v1'
           MAIL_TABLE: !Ref MailTable
           MAIL_DOMAIN: !Ref Domain
@@ -1164,8 +1378,13 @@ Resources:
       Role: !GetAtt MailRole.Arn
       MemorySize: 256
       Timeout: 29
+      TracingConfig:
+        Mode: !If [UseTracing, Active, PassThrough]
       Environment:
         Variables:
+          BUILD_ID: !Ref BuildId
+          BUILD_COMMIT: !Ref BuildCommit
+          DEPLOYED_TIME: !Ref DeployedTime
           BASE_URL: !Sub 'https://${ApiHostLabel}.${Domain}/v1'
           MAIL_TABLE: !Ref MailTable
           MAIL_DOMAIN: !Ref Domain
@@ -1184,8 +1403,13 @@ Resources:
       Role: !GetAtt MailReceiveRole.Arn
       MemorySize: 1024
       Timeout: 60
+      TracingConfig:
+        Mode: !If [UseTracing, Active, PassThrough]
       Environment:
         Variables:
+          BUILD_ID: !Ref BuildId
+          BUILD_COMMIT: !Ref BuildCommit
+          DEPLOYED_TIME: !Ref DeployedTime
           MAIL_TABLE: !Ref MailTable
           MAIL_DOMAIN: !Ref Domain
 
@@ -1207,8 +1431,13 @@ Resources:
       Role: !GetAtt WebhookRole.Arn
       MemorySize: 256
       Timeout: 29
+      TracingConfig:
+        Mode: !If [UseTracing, Active, PassThrough]
       Environment:
         Variables:
+          BUILD_ID: !Ref BuildId
+          BUILD_COMMIT: !Ref BuildCommit
+          DEPLOYED_TIME: !Ref DeployedTime
           BASE_URL: !Sub 'https://${ApiHostLabel}.${Domain}/v1'
           WEBHOOK_TABLE: !Ref WebhookTable
           WEBHOOK_RETENTION_DAYS: !Ref WebhookRetentionDays
@@ -1222,8 +1451,13 @@ Resources:
       Role: !GetAtt TotpRole.Arn
       MemorySize: 128
       Timeout: 10
+      TracingConfig:
+        Mode: !If [UseTracing, Active, PassThrough]
       Environment:
         Variables:
+          BUILD_ID: !Ref BuildId
+          BUILD_COMMIT: !Ref BuildCommit
+          DEPLOYED_TIME: !Ref DeployedTime
           BASE_URL: !Sub 'https://${ApiHostLabel}.${Domain}/v1'
           TOTP_TABLE: !Ref TotpTable
 
@@ -1236,8 +1470,13 @@ Resources:
       Role: !GetAtt LockRole.Arn
       MemorySize: 128
       Timeout: 29
+      TracingConfig:
+        Mode: !If [UseTracing, Active, PassThrough]
       Environment:
         Variables:
+          BUILD_ID: !Ref BuildId
+          BUILD_COMMIT: !Ref BuildCommit
+          DEPLOYED_TIME: !Ref DeployedTime
           BASE_URL: !Sub 'https://${ApiHostLabel}.${Domain}/v1'
           LOCK_TABLE: !Ref LockTable
 
@@ -1250,9 +1489,34 @@ Resources:
       Role: !GetAtt PerfRole.Arn
       MemorySize: 512
       Timeout: 29
+      TracingConfig:
+        Mode: !If [UseTracing, Active, PassThrough]
       Environment:
         Variables:
+          BUILD_ID: !Ref BuildId
+          BUILD_COMMIT: !Ref BuildCommit
+          DEPLOYED_TIME: !Ref DeployedTime
           BASE_URL: !Sub 'https://${ApiHostLabel}.${Domain}/v1'
+          PERF_TABLE: !Ref PerfTable
+
+  ReconFunction:
+    Type: AWS::Lambda::Function
+    Properties:
+      Runtime: python3.12
+      Handler: recon.handler
+      Code: ./src
+      Role: !GetAtt ReconRole.Arn
+      MemorySize: 512
+      Timeout: 29
+      TracingConfig:
+        Mode: !If [UseTracing, Active, PassThrough]
+      Environment:
+        Variables:
+          BUILD_ID: !Ref BuildId
+          BUILD_COMMIT: !Ref BuildCommit
+          DEPLOYED_TIME: !Ref DeployedTime
+          BASE_URL: !Sub 'https://${ApiHostLabel}.${Domain}/v1'
+          RECON_TABLE: !Ref ReconTable
           PERF_TABLE: !Ref PerfTable
 
   SmsFunction:
@@ -1262,10 +1526,15 @@ Resources:
       Handler: sms.handler
       Code: ./src
       Role: !GetAtt SmsRole.Arn
-      MemorySize: 128
+      MemorySize: 512
       Timeout: 29
+      TracingConfig:
+        Mode: !If [UseTracing, Active, PassThrough]
       Environment:
         Variables:
+          BUILD_ID: !Ref BuildId
+          BUILD_COMMIT: !Ref BuildCommit
+          DEPLOYED_TIME: !Ref DeployedTime
           BASE_URL: !Sub 'https://${ApiHostLabel}.${Domain}/v1'
           SMS_TABLE: !Ref SmsTable
           SMS_DEVICE_KEYS: !Ref SmsDeviceKeys
@@ -1273,7 +1542,8 @@ Resources:
           SMS_REGION: !Ref SmsRegion
           SMS_SEND_INTERVAL: !Ref SmsSendIntervalSeconds
 
-  # Speech comes from Polly in VoiceRegion; the audio is stored in this region.
+  # Speech comes from Polly in VoiceRegion; the audio is stored in this region,
+  # and transcribed (voice/listen) in this region, where the bucket is.
   VoiceFunction:
     Type: AWS::Lambda::Function
     Properties:
@@ -1283,8 +1553,13 @@ Resources:
       Role: !GetAtt VoiceRole.Arn
       MemorySize: 512
       Timeout: 29
+      TracingConfig:
+        Mode: !If [UseTracing, Active, PassThrough]
       Environment:
         Variables:
+          BUILD_ID: !Ref BuildId
+          BUILD_COMMIT: !Ref BuildCommit
+          DEPLOYED_TIME: !Ref DeployedTime
           BASE_URL: !Sub 'https://${ApiHostLabel}.${Domain}/v1'
           VOICE_BUCKET: !Ref VoiceBucket
           VOICE_TABLE: !Ref VoiceTable
@@ -1292,6 +1567,8 @@ Resources:
           VOICE_NAME: !Ref VoiceName
           VOICE_ENGINE: !Ref VoiceEngine
           VOICE_DAILY_CHARACTERS: !Ref VoiceDailyCharacters
+          VOICE_LANGUAGE: !Ref VoiceLanguage
+          VOICE_DAILY_LISTEN_SECONDS: !Ref VoiceDailyListenSeconds
 
   NamesFunction:
     Type: AWS::Lambda::Function
@@ -1302,8 +1579,13 @@ Resources:
       Role: !GetAtt StatelessRole.Arn
       MemorySize: 256
       Timeout: 10
+      TracingConfig:
+        Mode: !If [UseTracing, Active, PassThrough]
       Environment:
         Variables:
+          BUILD_ID: !Ref BuildId
+          BUILD_COMMIT: !Ref BuildCommit
+          DEPLOYED_TIME: !Ref DeployedTime
           BASE_URL: !Sub 'https://${ApiHostLabel}.${Domain}/v1'
 
   QrFunction:
@@ -1315,8 +1597,13 @@ Resources:
       Role: !GetAtt StatelessRole.Arn
       MemorySize: 512
       Timeout: 29
+      TracingConfig:
+        Mode: !If [UseTracing, Active, PassThrough]
       Environment:
         Variables:
+          BUILD_ID: !Ref BuildId
+          BUILD_COMMIT: !Ref BuildCommit
+          DEPLOYED_TIME: !Ref DeployedTime
           BASE_URL: !Sub 'https://${ApiHostLabel}.${Domain}/v1'
 
   DiscoveryFunction:
@@ -1328,10 +1615,58 @@ Resources:
       Role: !GetAtt StatelessRole.Arn
       MemorySize: 256
       Timeout: 10
+      TracingConfig:
+        Mode: !If [UseTracing, Active, PassThrough]
       Environment:
         Variables:
+          BUILD_ID: !Ref BuildId
+          BUILD_COMMIT: !Ref BuildCommit
+          DEPLOYED_TIME: !Ref DeployedTime
           BASE_URL: !Sub 'https://${ApiHostLabel}.${Domain}/v1'
           MAIL_DOMAIN: !Ref Domain
+
+  # The public view of an X-Ray trace of this stack (health returns its URL).
+  TraceFunction:
+    Type: AWS::Lambda::Function
+    Properties:
+      Runtime: python3.12
+      Handler: trace_view.handler
+      Code: ./src
+      Role: !GetAtt TraceRole.Arn
+      MemorySize: 256
+      Timeout: 29
+      TracingConfig:
+        Mode: !If [UseTracing, Active, PassThrough]
+      Environment:
+        Variables:
+          BUILD_ID: !Ref BuildId
+          BUILD_COMMIT: !Ref BuildCommit
+          DEPLOYED_TIME: !Ref DeployedTime
+          BASE_URL: !Sub 'https://${ApiHostLabel}.${Domain}/v1'
+          TRACE_PREFIX: !Sub '${AWS::StackName}-'
+
+  # Probes every service through the public API; the deadline is 20 s, under
+  # API Gateway's 29. HEALTH_FUNCTIONS lists the functions whose build it checks.
+  HealthFunction:
+    Type: AWS::Lambda::Function
+    Properties:
+      Runtime: python3.12
+      Handler: health.handler
+      Code: ./src
+      Role: !GetAtt HealthRole.Arn
+      MemorySize: 256
+      Timeout: 29
+      TracingConfig:
+        Mode: !If [UseTracing, Active, PassThrough]
+      Environment:
+        Variables:
+          BUILD_ID: !Ref BuildId
+          BUILD_COMMIT: !Ref BuildCommit
+          DEPLOYED_TIME: !Ref DeployedTime
+          BASE_URL: !Sub 'https://${ApiHostLabel}.${Domain}/v1'
+          MAIL_DOMAIN: !Ref Domain
+          HEALTH_TABLE: !Ref HealthTable
+          HEALTH_FUNCTIONS: !Sub 'lists=${ListsFunction},lists_worker=${ListsWorkerFunction},mail=${MailFunction},mail_inbox=${MailInboxFunction},mail_receive=${MailReceiveFunction},webhook=${WebhookFunction},totp=${TotpFunction},lock=${LockFunction},perf=${PerfFunction},recon=${ReconFunction},sms=${SmsFunction},voice=${VoiceFunction},names=${NamesFunction},qr=${QrFunction},discovery=${DiscoveryFunction},trace=${TraceFunction}'
 
   # ===========================================================================
   # V1 API - /v1/<service> and /v1/<service>/{proxy+}, ANY method, Lambda proxy.
@@ -1867,6 +2202,123 @@ Resources:
         IntegrationHttpMethod: POST
         Uri: !Sub 'arn:${AWS::Partition}:apigateway:${AWS::Region}:lambda:path/2015-03-31/functions/${PerfFunction.Arn}/invocations'
 
+  # ---- /v1/recon
+  ReconResource:
+    Type: AWS::ApiGateway::Resource
+    Properties:
+      RestApiId: !Ref V1Api
+      ParentId: !GetAtt V1Api.RootResourceId
+      PathPart: 'recon'
+
+  ReconMethod:
+    Type: AWS::ApiGateway::Method
+    Properties:
+      RestApiId: !Ref V1Api
+      ResourceId: !Ref ReconResource
+      HttpMethod: ANY
+      AuthorizationType: NONE
+      Integration:
+        Type: AWS_PROXY
+        IntegrationHttpMethod: POST
+        Uri: !Sub 'arn:${AWS::Partition}:apigateway:${AWS::Region}:lambda:path/2015-03-31/functions/${ReconFunction.Arn}/invocations'
+
+  ReconProxyResource:
+    Type: AWS::ApiGateway::Resource
+    Properties:
+      RestApiId: !Ref V1Api
+      ParentId: !Ref ReconResource
+      PathPart: '{proxy+}'
+
+  ReconProxyMethod:
+    Type: AWS::ApiGateway::Method
+    Properties:
+      RestApiId: !Ref V1Api
+      ResourceId: !Ref ReconProxyResource
+      HttpMethod: ANY
+      AuthorizationType: NONE
+      Integration:
+        Type: AWS_PROXY
+        IntegrationHttpMethod: POST
+        Uri: !Sub 'arn:${AWS::Partition}:apigateway:${AWS::Region}:lambda:path/2015-03-31/functions/${ReconFunction.Arn}/invocations'
+
+  # ---- /v1/health
+  HealthResource:
+    Type: AWS::ApiGateway::Resource
+    Properties:
+      RestApiId: !Ref V1Api
+      ParentId: !GetAtt V1Api.RootResourceId
+      PathPart: 'health'
+
+  HealthMethod:
+    Type: AWS::ApiGateway::Method
+    Properties:
+      RestApiId: !Ref V1Api
+      ResourceId: !Ref HealthResource
+      HttpMethod: ANY
+      AuthorizationType: NONE
+      Integration:
+        Type: AWS_PROXY
+        IntegrationHttpMethod: POST
+        Uri: !Sub 'arn:${AWS::Partition}:apigateway:${AWS::Region}:lambda:path/2015-03-31/functions/${HealthFunction.Arn}/invocations'
+
+  HealthProxyResource:
+    Type: AWS::ApiGateway::Resource
+    Properties:
+      RestApiId: !Ref V1Api
+      ParentId: !Ref HealthResource
+      PathPart: '{proxy+}'
+
+  HealthProxyMethod:
+    Type: AWS::ApiGateway::Method
+    Properties:
+      RestApiId: !Ref V1Api
+      ResourceId: !Ref HealthProxyResource
+      HttpMethod: ANY
+      AuthorizationType: NONE
+      Integration:
+        Type: AWS_PROXY
+        IntegrationHttpMethod: POST
+        Uri: !Sub 'arn:${AWS::Partition}:apigateway:${AWS::Region}:lambda:path/2015-03-31/functions/${HealthFunction.Arn}/invocations'
+
+  # ---- /v1/trace
+  TraceResource:
+    Type: AWS::ApiGateway::Resource
+    Properties:
+      RestApiId: !Ref V1Api
+      ParentId: !GetAtt V1Api.RootResourceId
+      PathPart: 'trace'
+
+  TraceMethod:
+    Type: AWS::ApiGateway::Method
+    Properties:
+      RestApiId: !Ref V1Api
+      ResourceId: !Ref TraceResource
+      HttpMethod: ANY
+      AuthorizationType: NONE
+      Integration:
+        Type: AWS_PROXY
+        IntegrationHttpMethod: POST
+        Uri: !Sub 'arn:${AWS::Partition}:apigateway:${AWS::Region}:lambda:path/2015-03-31/functions/${TraceFunction.Arn}/invocations'
+
+  TraceProxyResource:
+    Type: AWS::ApiGateway::Resource
+    Properties:
+      RestApiId: !Ref V1Api
+      ParentId: !Ref TraceResource
+      PathPart: '{proxy+}'
+
+  TraceProxyMethod:
+    Type: AWS::ApiGateway::Method
+    Properties:
+      RestApiId: !Ref V1Api
+      ResourceId: !Ref TraceProxyResource
+      HttpMethod: ANY
+      AuthorizationType: NONE
+      Integration:
+        Type: AWS_PROXY
+        IntegrationHttpMethod: POST
+        Uri: !Sub 'arn:${AWS::Partition}:apigateway:${AWS::Region}:lambda:path/2015-03-31/functions/${TraceFunction.Arn}/invocations'
+
   # ---- invoke permissions (any stage, method and path of the owning API)
   ListsInvokePermission:
     Type: AWS::Lambda::Permission
@@ -1948,6 +2400,30 @@ Resources:
       Principal: apigateway.amazonaws.com
       SourceArn: !Sub 'arn:${AWS::Partition}:execute-api:${AWS::Region}:${AWS::AccountId}:${V1Api}/*'
 
+  ReconInvokePermission:
+    Type: AWS::Lambda::Permission
+    Properties:
+      FunctionName: !Ref ReconFunction
+      Action: lambda:InvokeFunction
+      Principal: apigateway.amazonaws.com
+      SourceArn: !Sub 'arn:${AWS::Partition}:execute-api:${AWS::Region}:${AWS::AccountId}:${V1Api}/*'
+
+  HealthInvokePermission:
+    Type: AWS::Lambda::Permission
+    Properties:
+      FunctionName: !Ref HealthFunction
+      Action: lambda:InvokeFunction
+      Principal: apigateway.amazonaws.com
+      SourceArn: !Sub 'arn:${AWS::Partition}:execute-api:${AWS::Region}:${AWS::AccountId}:${V1Api}/*'
+
+  TraceInvokePermission:
+    Type: AWS::Lambda::Permission
+    Properties:
+      FunctionName: !Ref TraceFunction
+      Action: lambda:InvokeFunction
+      Principal: apigateway.amazonaws.com
+      SourceArn: !Sub 'arn:${AWS::Partition}:execute-api:${AWS::Region}:${AWS::AccountId}:${V1Api}/*'
+
   MailInboxInvokePermission:
     Type: AWS::Lambda::Permission
     Properties:
@@ -2017,9 +2493,9 @@ Resources:
         application/json: '{"error": $context.error.messageString, "gatewayError": "$context.error.responseType"}'
 
   # Bump this logical id when V1Api resources or methods change.
-  V1DeploymentC:
+  V1DeploymentF:
     Type: AWS::ApiGateway::Deployment
-    DependsOn: [V1RootMethod, V1ProxyMethod, ListsMethod, ListsProxyMethod, NamesMethod, NamesProxyMethod, LockMethod, LockProxyMethod, MailMethod, MailProxyMethod, MailPopMethod, MailResetMethod, MailClearMethod, SmsMethod, SmsProxyMethod, VoiceMethod, VoiceProxyMethod, WebhookMethod, WebhookProxyMethod, TotpMethod, TotpProxyMethod, QrMethod, QrProxyMethod, PerfMethod, PerfProxyMethod, V1Default4xxResponse, V1Default5xxResponse]
+    DependsOn: [V1RootMethod, V1ProxyMethod, ListsMethod, ListsProxyMethod, NamesMethod, NamesProxyMethod, LockMethod, LockProxyMethod, MailMethod, MailProxyMethod, MailPopMethod, MailResetMethod, MailClearMethod, SmsMethod, SmsProxyMethod, VoiceMethod, VoiceProxyMethod, WebhookMethod, WebhookProxyMethod, TotpMethod, TotpProxyMethod, QrMethod, QrProxyMethod, PerfMethod, PerfProxyMethod, ReconMethod, ReconProxyMethod, HealthMethod, HealthProxyMethod, TraceMethod, TraceProxyMethod, V1Default4xxResponse, V1Default5xxResponse]
     Properties:
       RestApiId: !Ref V1Api
 
@@ -2027,13 +2503,34 @@ Resources:
     Type: AWS::ApiGateway::Stage
     Properties:
       RestApiId: !Ref V1Api
-      DeploymentId: !Ref V1DeploymentC
+      DeploymentId: !Ref V1DeploymentF
       StageName: live
+      TracingEnabled: !If [UseTracing, true, false]
       MethodSettings:
         - ResourcePath: '/*'
           HttpMethod: '*'
           ThrottlingRateLimit: !Ref ThrottleRateLimit
           ThrottlingBurstLimit: !Ref ThrottleBurstLimit
+
+  # Health calls are always traced, so health/get and health/check can hand back
+  # a trace URL that will exist. Every other request follows the default rule.
+  HealthSamplingRule:
+    Type: AWS::XRay::SamplingRule
+    Condition: UseTracing
+    Properties:
+      SamplingRule:
+        RuleName: !Sub '${AWS::StackName}-health'
+        Priority: 100
+        FixedRate: 1
+        ReservoirSize: 1
+        ServiceName: '*'
+        ServiceType: '*'
+        Host: '*'
+        HTTPMethod: '*'
+        # API Gateway may see /health/check or /v1/health/check behind the custom domain.
+        URLPath: '*/health/*'
+        ResourceARN: '*'
+        Version: 1
 
   # Bump this logical id when RootApi resources or methods change.
   RootDeploymentA:
@@ -2080,3 +2577,6 @@ Outputs:
     Value: !Ref MailTable
   VoiceBucketName:
     Value: !Ref VoiceBucket
+  HealthUrl:
+    Description: End-to-end self-test of this deployment
+    Value: !Sub 'https://${ApiHostLabel}.${Domain}/v1/health/check'

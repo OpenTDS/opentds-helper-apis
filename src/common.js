@@ -18,6 +18,27 @@ const CORS = {
   'Access-Control-Expose-Headers': '*',
 };
 
+// Build stamp: every function carries the same BUILD_ID / BUILD_COMMIT /
+// DEPLOYED_TIME (deploy.ps1 or Terraform), returned as the X-Build header -
+// mirrors build_info() in common.py. The contract version is in version.json.
+let BUILD;
+function buildInfo() {
+  if (!BUILD) {
+    let version = null;
+    try { version = require('./version.json').version; } catch (e) { version = null; }
+    const deployed = parseInt(process.env.DEPLOYED_TIME || '0', 10);
+    BUILD = {
+      version,
+      build: process.env.BUILD_ID || 'dev',
+      commit: process.env.BUILD_COMMIT || null,
+      deployedTime: Number.isFinite(deployed) && deployed > 0 ? deployed : null,
+    };
+  }
+  return { ...BUILD };
+}
+
+const buildHeaders = () => ({ 'X-Build': buildInfo().build });
+
 class ApiError extends Error {
   constructor(status, message, extra = {}) {
     super(message);
@@ -33,6 +54,7 @@ function respond(status, obj, headers = {}) {
       'Content-Type': 'application/json; charset=utf-8',
       'Cache-Control': 'no-store',
       ...CORS,
+      ...buildHeaders(),
       ...headers,
     },
     body: JSON.stringify(obj, null, 2),
@@ -42,7 +64,7 @@ function respond(status, obj, headers = {}) {
 function raw(status, body, contentType, headers = {}) {
   return {
     statusCode: status,
-    headers: { 'Content-Type': contentType, 'Cache-Control': 'no-store', ...CORS, ...headers },
+    headers: { 'Content-Type': contentType, 'Cache-Control': 'no-store', ...CORS, ...buildHeaders(), ...headers },
     body,
   };
 }
@@ -168,5 +190,5 @@ function baseUrl(event) {
 const nowSeconds = () => Math.floor(Date.now() / 1000);
 
 module.exports = {
-  KEY_RE, KEY_RULE, ApiError, Req, respond, raw, error, run, baseUrl, nowSeconds,
+  KEY_RE, KEY_RULE, ApiError, Req, respond, raw, error, run, baseUrl, nowSeconds, buildInfo,
 };

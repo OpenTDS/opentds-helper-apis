@@ -115,7 +115,7 @@ Comma-separated strings became lists.
 | `ThrottleRateLimit`, `ThrottleBurstLimit`, `WebhookRetentionDays` | `throttle_rate_limit`, `throttle_burst_limit`, `webhook_retention_days` |
 | `SmsDeviceKeys` | `sms_device_keys` (list, sensitive) + `generate_sms_device_key` |
 | `SmsSendAllowedNumbers`, `SmsRegion`, `SmsSendIntervalSeconds` | `sms_send_allowed_numbers` (list), `sms_region`, `sms_send_interval_seconds` |
-| `VoiceRegion`, `VoiceName`, `VoiceEngine`, `VoiceDailyCharacters` | `voice_region`, `voice_name`, `voice_engine`, `voice_daily_characters` |
+| `VoiceRegion`, `VoiceName`, `VoiceEngine`, `VoiceDailyCharacters`, `VoiceLanguage`, `VoiceDailyListenSeconds` | `voice_region`, `voice_name`, `voice_engine`, `voice_daily_characters`, `voice_language`, `voice_daily_listen_seconds` |
 
 Variables that are new in Terraform:
 
@@ -123,6 +123,15 @@ Variables that are new in Terraform:
 * `name_prefix`: names functions, roles, tables, APIs and the rule set, as the stack name did.
 * `tags`: applied to everything.
 * `python_runtime` / `nodejs_runtime`: if an older provider rejects `nodejs24.x`, upgrade the provider or set `nodejs22.x`.
+
+`Tracing` is `tracing` (bool, default `true`): X-Ray on the v1 stage and every
+function, the X-Ray write policy on every role, and the health sampling rule.
+
+The build stamp (`BuildId`, `BuildCommit`, `DeployedTime`, which `deploy.ps1`
+fills in) is `build_id`, `build_commit` and `deployed_time`. Left empty, the
+build is the UTC time the code package last changed (a `time_static` resource
+re-created only when `../src` changes), so a plain `terraform apply` with no code
+change keeps the same build. For a commit: `-var build_commit=$(git rev-parse --short HEAD)`.
 
 ## Differences from the CloudFormation deployment
 

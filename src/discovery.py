@@ -14,7 +14,7 @@ environment - so a redeploy of the code is all it takes to publish a change
 import json
 import os
 
-from common import CORS, dumps, error, raw
+from common import CORS, build_info, dumps, error, raw
 
 HERE = os.path.dirname(os.path.abspath(__file__))
 BASE_URL = os.environ.get('BASE_URL', 'https://api.example.com/v1').rstrip('/')
@@ -70,6 +70,7 @@ def index():
     return {
         'name': 'Test Helper API',
         'version': 'v1',
+        'build': build_info(),
         'baseUrl': BASE_URL,
         'mailDomain': MAIL_DOMAIN,
         'docs': {
@@ -77,6 +78,7 @@ def index():
             'openapi': f'{BASE_URL}/openapi.json',
             'openapi30': f'{BASE_URL}/openapi-3.0.json',
             'apiCatalog': f'{ROOT_URL}/.well-known/api-catalog',
+            'health': f'{BASE_URL}/health/check',
         },
         'conventions': [
             'Every action answers GET: {baseUrl}/<service>/<action>?param=value.',

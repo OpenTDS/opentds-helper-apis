@@ -50,6 +50,29 @@ resource "aws_dynamodb_table" "this" {
   }
 }
 
+# health/check's cache, lease and private probe namespace. Disposable: no
+# prevent_destroy, nothing in it is user data.
+resource "aws_dynamodb_table" "health" {
+  name         = "${var.name_prefix}-health"
+  billing_mode = "PAY_PER_REQUEST"
+  hash_key     = "PK"
+  range_key    = "SK"
+
+  attribute {
+    name = "PK"
+    type = "S"
+  }
+  attribute {
+    name = "SK"
+    type = "S"
+  }
+
+  ttl {
+    attribute_name = "ttl"
+    enabled        = true
+  }
+}
+
 # Service = a number's last nine digits; Received = epoch-ms sort key. The
 # ByDay index lets sms/list sweep every number with a Query, not a Scan.
 resource "aws_dynamodb_table" "sms" {
@@ -75,6 +98,49 @@ resource "aws_dynamodb_table" "sms" {
     name            = "ByDay"
     hash_key        = "Day"
     range_key       = "Received"
+    projection_type = "ALL"
+  }
+
+  ttl {
+    attribute_name = "ttl"
+    enabled        = true
+  }
+
+  lifecycle {
+    prevent_destroy = true
+  }
+}
+
+# recon: one item per reconciled value plus sharded counter and settings items.
+# The ByState index (gk = <key>#<state>#<shard>, gt = ms it entered the state)
+# serves recon/list and recon/cyclepop without a Scan.
+resource "aws_dynamodb_table" "recon" {
+  name         = "${var.name_prefix}-recon"
+  billing_mode = "PAY_PER_REQUEST"
+  hash_key     = "PK"
+  range_key    = "SK"
+
+  attribute {
+    name = "PK"
+    type = "S"
+  }
+  attribute {
+    name = "SK"
+    type = "S"
+  }
+  attribute {
+    name = "gk"
+    type = "S"
+  }
+  attribute {
+    name = "gt"
+    type = "N"
+  }
+
+  global_secondary_index {
+    name            = "ByState"
+    hash_key        = "gk"
+    range_key       = "gt"
     projection_type = "ALL"
   }
 
@@ -216,7 +282,9 @@ resource "aws_s3_bucket_lifecycle_configuration" "inbound" {
 
 # voice audio. generated/ is the content-addressed store behind voice/say: it
 # expires 30 days after an utterance's LAST use (voice_store rewrites one in
-# place when it is used again). saved/ is kept until deleted.
+# place when it is used again). saved/ is kept until deleted. heard/ is what
+# was given to voice/listen and what was made of it: evidence from a test run,
+# holding whatever the system under test said, gone after 30 days.
 resource "aws_s3_bucket_lifecycle_configuration" "voice" {
   bucket = aws_s3_bucket.this["voice"].id
 
@@ -225,6 +293,17 @@ resource "aws_s3_bucket_lifecycle_configuration" "voice" {
     status = "Enabled"
     filter {
       prefix = "generated/"
+    }
+    expiration {
+      days = 30
+    }
+  }
+
+  rule {
+    id     = "expire-heard-audio"
+    status = "Enabled"
+    filter {
+      prefix = "heard/"
     }
     expiration {
       days = 30

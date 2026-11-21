@@ -16,8 +16,18 @@
      every one of them.
   5. Prints the outputs and warns if SES is still in the sandbox.
 
+  Every deploy is stamped with a build: BuildId (the UTC deploy time as
+  yyyymmdd.hhmm, or -BuildId to choose one), BuildCommit (git, when the folder
+  is a git working copy; a trailing + means uncommitted changes) and
+  DeployedTime. Every function carries it; every response returns it as the
+  X-Build header; health/get reports it and health/check flags any function
+  left on another build. The API contract version is src/version.json.
+
+  -Tracing true|false switches AWS X-Ray on the v1 API and every function (on
+  for a first deploy; afterwards the deployed value is kept unless you pass it).
+
   Settings you leave out keep the deployed stack's current value (allow-lists,
-  SMS handsets and region, voice region/voice/engine/budget, throttles,
+  SMS handsets and region, voice region/voice/engine/language/budgets, throttles,
   retention, DMARC). Pass one explicitly to
   change it - pass '' to clear a list. On a first deploy they take the defaults.
 
@@ -41,6 +51,10 @@
   .\deploy.ps1 -Domain example.com -Region us-west-1 -VoiceRegion us-west-2
   (voice/say speaks through Amazon Polly in -VoiceRegion; it must be a region
   that offers the engine - us-west-1 has neither neural nor generative voices)
+.EXAMPLE
+  .\deploy.ps1 -Domain example.com -VoiceLanguage en-GB -VoiceDailyListenSeconds 3600
+  (voice/listen transcribes with Amazon Transcribe in the stack's own region;
+  -VoiceDailyListenSeconds 0 switches listening off)
 #>
 [CmdletBinding()]
 param(
@@ -68,6 +82,10 @@ param(
     [string]$VoiceName,
     [ValidateSet('standard', 'neural', 'generative')][string]$VoiceEngine,
     [int]$VoiceDailyCharacters,
+    [ValidatePattern('^([a-z]{2,3}-[A-Z]{2}|auto)$')][string]$VoiceLanguage,
+    [int]$VoiceDailyListenSeconds,
+    [ValidatePattern('^[A-Za-z0-9._+-]{1,64}$')][string]$BuildId,
+    [ValidateSet('true', 'false')][string]$Tracing,
     [switch]$CheckOnly,
     [switch]$SkipDnsCheck,
     [switch]$Yes
@@ -371,9 +389,12 @@ $smsNumbers    = Resolve-Setting 'SmsSendAllowedNumbers' ''
 $smsRegion     = Resolve-Setting 'SmsRegion' 'ap-southeast-2'
 $smsInterval   = Resolve-Setting 'SmsSendIntervalSeconds' '10'
 $voiceRegion   = Resolve-Setting 'VoiceRegion' 'ap-southeast-2'
+$tracing       = Resolve-Setting 'Tracing' 'true'
 $voiceName     = Resolve-Setting 'VoiceName' 'Olivia'
 $voiceEngine   = Resolve-Setting 'VoiceEngine' 'neural'
 $voiceDaily    = Resolve-Setting 'VoiceDailyCharacters' '25000'
+$voiceLanguage = Resolve-Setting 'VoiceLanguage' 'en-AU'
+$voiceListen   = Resolve-Setting 'VoiceDailyListenSeconds' '1800'
 
 # SMS device keys: a NoEcho parameter can't be read back from the stack, so the
 # local key file is the source of truth. Created with a random key if missing.
@@ -414,6 +435,22 @@ if (-not (Test-Aws s3api head-bucket --bucket $StagingBucket --region $Region)) 
         'BlockPublicAcls=true,IgnorePublicAcls=true,BlockPublicPolicy=true,RestrictPublicBuckets=true' | Out-Null
 }
 
+# ---------------------------------------------------------------- build stamp
+$deployedAt = [DateTimeOffset]::UtcNow
+if (-not $BuildId) { $BuildId = $deployedAt.ToString('yyyyMMdd.HHmm') }
+$buildCommit = ''
+if (Get-Command git -ErrorAction SilentlyContinue) {
+    $ErrorActionPreference = 'Continue'
+    $sha = (& git -C $root rev-parse --short HEAD 2>$null)
+    if ($LASTEXITCODE -eq 0 -and $sha) {
+        $buildCommit = "$sha".Trim()
+        $dirty = (& git -C $root status --porcelain -- src template.yaml 2>$null)
+        if ($dirty) { $buildCommit += '+' }
+    }
+    $ErrorActionPreference = 'Stop'
+}
+$apiVersion = (Get-Content (Join-Path $root 'src/version.json') -Raw | ConvertFrom-Json).version
+
 # ---------------------------------------------------------------- summary
 $params = [ordered]@{
     Domain                      = $Domain
@@ -442,10 +479,17 @@ $params = [ordered]@{
     VoiceName                   = $voiceName
     VoiceEngine                 = $voiceEngine
     VoiceDailyCharacters        = $voiceDaily
+    VoiceLanguage               = $voiceLanguage
+    VoiceDailyListenSeconds     = $voiceListen
+    Tracing                     = $tracing
+    BuildId                     = $BuildId
+    BuildCommit                 = $buildCommit
+    DeployedTime                = "$($deployedAt.ToUnixTimeSeconds())"
 }
 
 Write-Host "`n== About to deploy stack '$StackName' to $Region" -ForegroundColor Cyan
 Write-Host "API:  https://$ApiHostLabel.$Domain/v1"
+Write-Host "Build: $BuildId (API $apiVersion$(if ($buildCommit) { ", commit $buildCommit" }))"
 $params.GetEnumerator() | ForEach-Object {
     $shown = if ($_.Key -eq 'SmsDeviceKeys') { "($($deviceKeys.Count) key(s) from sms-device-keys.txt)" } else { $_.Value }
     Write-Host ("  {0,-28} {1}" -f $_.Key, $shown)
@@ -486,3 +530,4 @@ if ($prod -ne 'True') {
 Write-Host "`nTry it:  https://$ApiHostLabel.$Domain/v1/lists/codes" -ForegroundColor Green
 Write-Host "Check every service:  .\scripts\test-deployment.ps1 -Domain $Domain" -ForegroundColor Green
 Write-Host "Guide:   https://$ApiHostLabel.$Domain/v1/llms.txt" -ForegroundColor Green
+Write-Host "Health:  https://$ApiHostLabel.$Domain/v1/health/check?fresh=true" -ForegroundColor Green

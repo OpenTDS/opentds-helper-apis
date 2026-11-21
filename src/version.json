@@ -1,0 +1,4 @@
+{
+  "version": "1.3.0",
+  "comment": "The API contract version (semver). Bump it by hand when the published API changes; tools/build_docs.py copies it into the OpenAPI info.version and every response reports it with the build (health/get, the /v1 index, the X-Build header carries the build)."
+}

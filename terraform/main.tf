@@ -41,11 +41,14 @@ locals {
     totp         = "${var.name_prefix}-totp"
     lock         = "${var.name_prefix}-lock"
     perf         = "${var.name_prefix}-perf"
+    recon        = "${var.name_prefix}-recon"
     sms          = "${var.name_prefix}-sms"
     voice        = "${var.name_prefix}-voice"
     names        = "${var.name_prefix}-names"
     qr           = "${var.name_prefix}-qr"
     discovery    = "${var.name_prefix}-discovery"
+    health       = "${var.name_prefix}-health"
+    trace        = "${var.name_prefix}-trace"
   }
 
   # SES receipt rule set handling (template.yaml Conditions).

@@ -23,7 +23,9 @@ import sys
 import urllib.parse
 
 ROOT = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
-ORDER = ['lists', 'names', 'mail', 'sms', 'totp', 'webhook', 'lock', 'qr', 'perf', 'voice']
+ORDER = ['lists', 'names', 'mail', 'sms', 'totp', 'webhook', 'lock', 'qr', 'perf', 'recon', 'voice', 'health',
+         'trace']
+VERSION = json.load(open(os.path.join(ROOT, 'src', 'version.json'), encoding='utf-8'))['version']
 
 ERROR_SCHEMA = {
     'type': 'object',
@@ -56,6 +58,23 @@ LIST_RECORD = {
     'additionalProperties': True,
 }
 
+BUILD_SCHEMA = {
+    'type': 'object',
+    'description': (
+        'The deployment that answered. Every function of a deployment carries the same build, '
+        'which is also sent on every response as the X-Build header.'),
+    'required': ['version', 'build'],
+    'properties': {
+        'version': {'type': 'string', 'nullable': True, 'description': 'API contract version (semver).'},
+        'build': {'type': 'string', 'description': 'Build id stamped at deploy time: the UTC '
+                  'deploy time as yyyymmdd.hhmm, or dev for an unstamped deployment.'},
+        'commit': {'type': 'string', 'nullable': True, 'description': 'Source commit, when the source '
+                   'was deployed from git; a trailing + means uncommitted changes.'},
+        'deployedTime': {'type': 'integer', 'nullable': True, 'description': 'When it was deployed, UTC '
+                         'epoch seconds.'},
+    },
+}
+
 SERVICE_INDEX = {
     'type': 'object',
     'required': ['service', 'actions'],
@@ -85,6 +104,7 @@ def _discovery_paths():
 
     index_schema = {'type': 'object', 'required': ['name', 'baseUrl', 'services'], 'properties': {
         'name': {'type': 'string'}, 'version': {'type': 'string'},
+        'build': {'$ref': '#/components/schemas/Build'},
         'baseUrl': {'type': 'string', 'format': 'uri'}, 'mailDomain': {'type': 'string'},
         'docs': {'type': 'object', 'additionalProperties': {'type': 'string', 'format': 'uri'}},
         'conventions': {'type': 'array', 'items': {'type': 'string'}},
@@ -154,12 +174,15 @@ def build_openapi():
         'openapi': '3.0.3',
         'info': {
             'title': 'Test Helper API',
-            'version': '1.0.0',
+            'version': VERSION,
             'description': (
                 'Helper endpoints for end-to-end and load test automation: shared test-data '
                 'lists, regional names, locks, an email catcher and sender with attachment '
-                'search, a webhook catcher, TOTP codes, QR codes, performance statistics and '
-                'spoken utterances for voice interfaces. '
+                'search, a webhook catcher, TOTP codes, QR codes, performance statistics, '
+                'reconciliation of submitted against processed records '
+                'and spoken utterances for voice interfaces, plus build information and an end-to-end '
+                'self-test of the deployment (health). Every response carries an X-Build header '
+                'naming the deployment that produced it. '
                 'Every action answers GET; parameter names are case-insensitive; no '
                 'authentication (except the SMS capture app\'s device key). An LLM-oriented '
                 'guide is at {BASE_URL}/llms.txt. Import this document into Postman '
@@ -172,7 +195,7 @@ def build_openapi():
         'paths': paths,
         'components': {
             'schemas': {'Error': ERROR_SCHEMA, 'ListRecord': LIST_RECORD,
-                        'ServiceIndex': SERVICE_INDEX},
+                        'ServiceIndex': SERVICE_INDEX, 'Build': BUILD_SCHEMA},
             'responses': {'Error': {
                 'description': 'Error: {"error": "...", "status": N} from a service, or '
                                '{"error": "...", "gatewayError": "THROTTLED"} from API Gateway.',
@@ -191,7 +214,8 @@ def build_openapi():
 # ------------------------------------------------------------------ OpenAPI 3.2
 TAG_SUMMARY = {'lists': 'Lists', 'names': 'Names', 'mail': 'Mail', 'sms': 'SMS', 'totp': 'TOTP',
                'webhook': 'Webhooks', 'lock': 'Locks', 'qr': 'QR codes', 'perf': 'Performance',
-               'voice': 'Voice', 'discovery': 'Discovery'}
+               'recon': 'Reconciliation',
+               'voice': 'Voice', 'health': 'Health', 'trace': 'Traces', 'discovery': 'Discovery'}
 
 
 def _schema32(s):

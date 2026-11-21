@@ -1,0 +1,2431 @@
+{
+ "tag": {
+  "name": "recon",
+  "description": "Reconcile what a test submitted (expect) with what it saw processed (confirm), matched by count per key - the whole value, or its last N characters (suffix=) so full values meet masked ones: records outstanding and unexpected, groups short, over or reconciled by count with their candidates, processing lag, and a pass/fail gate."
+ },
+ "paths": {
+  "/recon/expect": {
+   "get": {
+    "tags": [
+     "recon"
+    ],
+    "operationId": "reconExpect",
+    "summary": "Record a value the test submitted",
+    "description": "Records that the test submitted a record (the expected side). Every call is one record - or POST many. Records are counted per match key: a key expected 3 times needs 3 confirmations, and nothing is deduplicated. With suffix=N on the key's first write, the match key is the last N characters, so full values here can meet masked ones on the confirmed side; the full values are kept as candidates.",
+    "parameters": [
+     {
+      "name": "key",
+      "in": "query",
+      "required": true,
+      "description": "Caller-chosen reconciliation set (a test run, a batch). 1-128 characters: letters, digits and . _ - : @ + =, starting with a letter, digit or +. Case-sensitive.",
+      "schema": {
+       "type": "string"
+      },
+      "example": "run42-sms"
+     },
+     {
+      "name": "value",
+      "in": "query",
+      "required": false,
+      "description": "One record: the value that identifies it - an email address, an order or case number, a reference token. Trimmed; up to 1000 bytes. Required for a GET; for a POST send the values as the body instead. Records are matched by COUNT on their match key: the whole value (case-sensitive unless ignorecase=true), or its last N characters when the key was created with suffix=N. A value sent twice is two records.",
+      "schema": {
+       "type": "string"
+      },
+      "example": "609829094"
+     },
+     {
+      "name": "value64",
+      "in": "query",
+      "required": false,
+      "description": "The match value as base64 (standard or URL-safe). Use it for values containing + & % # - e.g. jane+test@example.com.",
+      "schema": {
+       "type": "string"
+      },
+      "example": "amFuZSt0ZXN0QGV4YW1wbGUuY29t"
+     },
+     {
+      "name": "ignorecase",
+      "in": "query",
+      "required": false,
+      "description": "Match values case-insensitively (Jane@X.com = jane@x.com). The FIRST write to a key fixes this for the life of the key; a later write that asks for the other setting is a 400. Default false.",
+      "schema": {
+       "type": "boolean",
+       "default": false
+      },
+      "example": true
+     },
+     {
+      "name": "suffix",
+      "in": "query",
+      "required": false,
+      "description": "Match on the last N characters (0-64) instead of the whole value, so the expected side can send full values (609829094) and the confirmed side masked ones (xxxxx9094 or 9094). The values given are kept as candidates. The FIRST write to a key fixes this; a later write that asks for another N is a 400. Default 0: whole values.",
+      "schema": {
+       "type": "integer",
+       "minimum": 0,
+       "maximum": 64,
+       "default": 0
+      },
+      "example": 4
+     },
+     {
+      "name": "perfkey",
+      "in": "query",
+      "required": false,
+      "description": "A perf key: each record this call pairs (an expectation meets a confirmation) records its processing lag as a perf/add point - ms from the match key's first expectation, 0 if the confirmation came first - so perf/stats, perf/series and perf/assert work on it.",
+      "schema": {
+       "type": "string"
+      },
+      "example": "run42-sms.lag"
+     },
+     {
+      "name": "amount",
+      "in": "query",
+      "required": false,
+      "description": "Example record field. Any parameter not listed here is a field (name lower-cased, value trimmed; an empty value means not given). The first record on each side keeps its fields. Fields given on both sides are compared only when the match key is unique on both sides (1 vs 1), where the pairing is certain; numbers compare as numbers (120.00 = 120).",
+      "schema": {
+       "type": "string"
+      },
+      "example": "120.00"
+     }
+    ],
+    "responses": {
+     "200": {
+      "description": "Recorded.",
+      "content": {
+       "application/json": {
+        "schema": {
+         "type": "object",
+         "required": [
+          "key",
+          "ignorecase",
+          "suffix",
+          "value",
+          "match",
+          "status",
+          "previousStatus",
+          "expected",
+          "confirmed"
+         ],
+         "properties": {
+          "key": {
+           "type": "string"
+          },
+          "ignorecase": {
+           "type": "boolean",
+           "description": "The key's matching rule."
+          },
+          "suffix": {
+           "type": "integer",
+           "description": "The key's matching rule: 0 = whole values."
+          },
+          "value": {
+           "type": "string",
+           "description": "The value as given."
+          },
+          "match": {
+           "type": "string",
+           "description": "The match key it was counted under."
+          },
+          "status": {
+           "type": "string",
+           "enum": [
+            "matched",
+            "mismatched",
+            "reconciledByCount",
+            "short",
+            "over"
+           ]
+          },
+          "previousStatus": {
+           "type": "string",
+           "enum": [
+            "matched",
+            "mismatched",
+            "reconciledByCount",
+            "short",
+            "over",
+            null
+           ],
+           "nullable": true,
+           "description": "The group's state before this record; null for a new key."
+          },
+          "expected": {
+           "type": "integer",
+           "description": "The group's expected count after this record."
+          },
+          "confirmed": {
+           "type": "integer"
+          },
+          "latencyMs": {
+           "type": "integer",
+           "description": "Present when this record paired an expectation with a confirmation."
+          },
+          "differences": {
+           "type": "array",
+           "description": "Fields that disagree (only in a mismatched group).",
+           "items": {
+            "type": "object",
+            "required": [
+             "field",
+             "expected",
+             "confirmed"
+            ],
+            "properties": {
+             "field": {
+              "type": "string"
+             },
+             "expected": {
+              "type": "string",
+              "nullable": true
+             },
+             "confirmed": {
+              "type": "string",
+              "nullable": true
+             }
+            }
+           }
+          }
+         }
+        },
+        "example": {
+         "key": "run42-sms",
+         "ignorecase": false,
+         "suffix": 4,
+         "value": "xxxxx7377",
+         "match": "7377",
+         "status": "short",
+         "previousStatus": "short",
+         "expected": 3,
+         "confirmed": 2,
+         "latencyMs": 41875
+        }
+       }
+      }
+     },
+     "400": {
+      "$ref": "#/components/responses/Error"
+     }
+    },
+    "x-free-form-query": {
+     "description": "Every query parameter other than key, value, value64, ignorecase, suffix and perfkey is stored as a field of this side of the record (names lower-cased). wait, strict, grace, sla, fields, status, start, limit and format are reserved (400).",
+     "additionalProperties": {
+      "type": "string"
+     }
+    }
+   },
+   "post": {
+    "tags": [
+     "recon"
+    ],
+    "operationId": "reconExpectPost",
+    "summary": "Record values the test submitted (batch: POST the values)",
+    "description": "Records that the test submitted a record (the expected side). Every call is one record - or POST many. Records are counted per match key: a key expected 3 times needs 3 confirmations, and nothing is deduplicated. With suffix=N on the key's first write, the match key is the last N characters, so full values here can meet masked ones on the confirmed side; the full values are kept as candidates.",
+    "parameters": [
+     {
+      "name": "key",
+      "in": "query",
+      "required": true,
+      "description": "Caller-chosen reconciliation set (a test run, a batch). 1-128 characters: letters, digits and . _ - : @ + =, starting with a letter, digit or +. Case-sensitive.",
+      "schema": {
+       "type": "string"
+      },
+      "example": "run42-sms"
+     },
+     {
+      "name": "value",
+      "in": "query",
+      "required": false,
+      "description": "One record: the value that identifies it - an email address, an order or case number, a reference token. Trimmed; up to 1000 bytes. Required for a GET; for a POST send the values as the body instead. Records are matched by COUNT on their match key: the whole value (case-sensitive unless ignorecase=true), or its last N characters when the key was created with suffix=N. A value sent twice is two records.",
+      "schema": {
+       "type": "string"
+      },
+      "example": "609829094"
+     },
+     {
+      "name": "value64",
+      "in": "query",
+      "required": false,
+      "description": "The match value as base64 (standard or URL-safe). Use it for values containing + & % # - e.g. jane+test@example.com.",
+      "schema": {
+       "type": "string"
+      },
+      "example": "amFuZSt0ZXN0QGV4YW1wbGUuY29t"
+     },
+     {
+      "name": "ignorecase",
+      "in": "query",
+      "required": false,
+      "description": "Match values case-insensitively (Jane@X.com = jane@x.com). The FIRST write to a key fixes this for the life of the key; a later write that asks for the other setting is a 400. Default false.",
+      "schema": {
+       "type": "boolean",
+       "default": false
+      },
+      "example": true
+     },
+     {
+      "name": "suffix",
+      "in": "query",
+      "required": false,
+      "description": "Match on the last N characters (0-64) instead of the whole value, so the expected side can send full values (609829094) and the confirmed side masked ones (xxxxx9094 or 9094). The values given are kept as candidates. The FIRST write to a key fixes this; a later write that asks for another N is a 400. Default 0: whole values.",
+      "schema": {
+       "type": "integer",
+       "minimum": 0,
+       "maximum": 64,
+       "default": 0
+      },
+      "example": 4
+     },
+     {
+      "name": "perfkey",
+      "in": "query",
+      "required": false,
+      "description": "A perf key: each record this call pairs (an expectation meets a confirmation) records its processing lag as a perf/add point - ms from the match key's first expectation, 0 if the confirmation came first - so perf/stats, perf/series and perf/assert work on it.",
+      "schema": {
+       "type": "string"
+      },
+      "example": "run42-sms.lag"
+     },
+     {
+      "name": "format",
+      "in": "query",
+      "required": false,
+      "description": "Format of a POST body. Default: detected - JSON when it starts with [ or {; CSV when the Content-Type says csv or the first line holds a , ; tab or |; otherwise one value per line (blank lines and lines starting with # are skipped).",
+      "schema": {
+       "type": "string",
+       "enum": [
+        "json",
+        "csv",
+        "text"
+       ]
+      },
+      "example": "csv"
+     }
+    ],
+    "responses": {
+     "200": {
+      "description": "Recorded.",
+      "content": {
+       "application/json": {
+        "schema": {
+         "anyOf": [
+          {
+           "type": "object",
+           "required": [
+            "key",
+            "ignorecase",
+            "suffix",
+            "value",
+            "match",
+            "status",
+            "previousStatus",
+            "expected",
+            "confirmed"
+           ],
+           "properties": {
+            "key": {
+             "type": "string"
+            },
+            "ignorecase": {
+             "type": "boolean",
+             "description": "The key's matching rule."
+            },
+            "suffix": {
+             "type": "integer",
+             "description": "The key's matching rule: 0 = whole values."
+            },
+            "value": {
+             "type": "string",
+             "description": "The value as given."
+            },
+            "match": {
+             "type": "string",
+             "description": "The match key it was counted under."
+            },
+            "status": {
+             "type": "string",
+             "enum": [
+              "matched",
+              "mismatched",
+              "reconciledByCount",
+              "short",
+              "over"
+             ]
+            },
+            "previousStatus": {
+             "type": "string",
+             "enum": [
+              "matched",
+              "mismatched",
+              "reconciledByCount",
+              "short",
+              "over",
+              null
+             ],
+             "nullable": true,
+             "description": "The group's state before this record; null for a new key."
+            },
+            "expected": {
+             "type": "integer",
+             "description": "The group's expected count after this record."
+            },
+            "confirmed": {
+             "type": "integer"
+            },
+            "latencyMs": {
+             "type": "integer",
+             "description": "Present when this record paired an expectation with a confirmation."
+            },
+            "differences": {
+             "type": "array",
+             "description": "Fields that disagree (only in a mismatched group).",
+             "items": {
+              "type": "object",
+              "required": [
+               "field",
+               "expected",
+               "confirmed"
+              ],
+              "properties": {
+               "field": {
+                "type": "string"
+               },
+               "expected": {
+                "type": "string",
+                "nullable": true
+               },
+               "confirmed": {
+                "type": "string",
+                "nullable": true
+               }
+              }
+             }
+            }
+           }
+          },
+          {
+           "type": "object",
+           "required": [
+            "key",
+            "ignorecase",
+            "suffix",
+            "format",
+            "received",
+            "recorded",
+            "skipped",
+            "groups",
+            "paired"
+           ],
+           "properties": {
+            "key": {
+             "type": "string"
+            },
+            "ignorecase": {
+             "type": "boolean"
+            },
+            "suffix": {
+             "type": "integer"
+            },
+            "format": {
+             "type": "string",
+             "enum": [
+              "json",
+              "csv",
+              "text"
+             ]
+            },
+            "received": {
+             "type": "integer",
+             "description": "Values in the body."
+            },
+            "recorded": {
+             "type": "integer",
+             "description": "Records counted (every value is a record)."
+            },
+            "skipped": {
+             "type": "integer",
+             "description": "Unusable values (empty, too long); see warnings."
+            },
+            "groups": {
+             "type": "integer",
+             "description": "Distinct match keys in this call."
+            },
+            "paired": {
+             "type": "integer",
+             "description": "Records this call paired with the other side."
+            },
+            "warnings": {
+             "type": "array",
+             "items": {
+              "type": "object",
+              "properties": {
+               "item": {
+                "type": "integer"
+               },
+               "error": {
+                "type": "string"
+               }
+              }
+             }
+            }
+           }
+          }
+         ]
+        },
+        "example": {
+         "key": "run42-sms",
+         "ignorecase": false,
+         "suffix": 4,
+         "format": "text",
+         "received": 1000,
+         "recorded": 1000,
+         "skipped": 0,
+         "groups": 957,
+         "paired": 0
+        }
+       }
+      }
+     },
+     "400": {
+      "$ref": "#/components/responses/Error"
+     }
+    },
+    "requestBody": {
+     "required": false,
+     "description": "Up to 5,000 records (one per value; repeats count): a JSON array of strings or of objects with a \"value\" (other members are fields), or {\"values\": [...]}; a CSV with a header row that has a value column (other columns are fields); or plain text, one value per line. Fields go in the body, not the query string.",
+     "content": {
+      "application/json": {
+       "schema": {
+        "type": "string",
+        "format": "binary"
+       }
+      },
+      "text/csv": {
+       "schema": {
+        "type": "string",
+        "format": "binary"
+       }
+      },
+      "text/plain": {
+       "schema": {
+        "type": "string"
+       }
+      }
+     }
+    }
+   }
+  },
+  "/recon/confirm": {
+   "get": {
+    "tags": [
+     "recon"
+    ],
+    "operationId": "reconConfirm",
+    "summary": "Record a value confirmed processed",
+    "description": "Records that a record was seen processed (the confirmed side) - from the system under test, an email caught with mail/pop, a text, a webhook, a lookup. Counted per match key like recon/expect: the key goes short, reconciledByCount, matched or over. With perfkey= the processing lag of each pairing is recorded in perf.",
+    "parameters": [
+     {
+      "name": "key",
+      "in": "query",
+      "required": true,
+      "description": "Caller-chosen reconciliation set (a test run, a batch). 1-128 characters: letters, digits and . _ - : @ + =, starting with a letter, digit or +. Case-sensitive.",
+      "schema": {
+       "type": "string"
+      },
+      "example": "run42-sms"
+     },
+     {
+      "name": "value",
+      "in": "query",
+      "required": false,
+      "description": "One record: the value that identifies it - an email address, an order or case number, a reference token. Trimmed; up to 1000 bytes. Required for a GET; for a POST send the values as the body instead. Records are matched by COUNT on their match key: the whole value (case-sensitive unless ignorecase=true), or its last N characters when the key was created with suffix=N. A value sent twice is two records.",
+      "schema": {
+       "type": "string"
+      },
+      "example": "609829094"
+     },
+     {
+      "name": "value64",
+      "in": "query",
+      "required": false,
+      "description": "The match value as base64 (standard or URL-safe). Use it for values containing + & % # - e.g. jane+test@example.com.",
+      "schema": {
+       "type": "string"
+      },
+      "example": "amFuZSt0ZXN0QGV4YW1wbGUuY29t"
+     },
+     {
+      "name": "ignorecase",
+      "in": "query",
+      "required": false,
+      "description": "Match values case-insensitively (Jane@X.com = jane@x.com). The FIRST write to a key fixes this for the life of the key; a later write that asks for the other setting is a 400. Default false.",
+      "schema": {
+       "type": "boolean",
+       "default": false
+      },
+      "example": true
+     },
+     {
+      "name": "suffix",
+      "in": "query",
+      "required": false,
+      "description": "Match on the last N characters (0-64) instead of the whole value, so the expected side can send full values (609829094) and the confirmed side masked ones (xxxxx9094 or 9094). The values given are kept as candidates. The FIRST write to a key fixes this; a later write that asks for another N is a 400. Default 0: whole values.",
+      "schema": {
+       "type": "integer",
+       "minimum": 0,
+       "maximum": 64,
+       "default": 0
+      },
+      "example": 4
+     },
+     {
+      "name": "perfkey",
+      "in": "query",
+      "required": false,
+      "description": "A perf key: each record this call pairs (an expectation meets a confirmation) records its processing lag as a perf/add point - ms from the match key's first expectation, 0 if the confirmation came first - so perf/stats, perf/series and perf/assert work on it.",
+      "schema": {
+       "type": "string"
+      },
+      "example": "run42-sms.lag"
+     },
+     {
+      "name": "amount",
+      "in": "query",
+      "required": false,
+      "description": "Example record field. Any parameter not listed here is a field (name lower-cased, value trimmed; an empty value means not given). The first record on each side keeps its fields. Fields given on both sides are compared only when the match key is unique on both sides (1 vs 1), where the pairing is certain; numbers compare as numbers (120.00 = 120).",
+      "schema": {
+       "type": "string"
+      },
+      "example": "120.00"
+     }
+    ],
+    "responses": {
+     "200": {
+      "description": "Recorded.",
+      "content": {
+       "application/json": {
+        "schema": {
+         "type": "object",
+         "required": [
+          "key",
+          "ignorecase",
+          "suffix",
+          "value",
+          "match",
+          "status",
+          "previousStatus",
+          "expected",
+          "confirmed"
+         ],
+         "properties": {
+          "key": {
+           "type": "string"
+          },
+          "ignorecase": {
+           "type": "boolean",
+           "description": "The key's matching rule."
+          },
+          "suffix": {
+           "type": "integer",
+           "description": "The key's matching rule: 0 = whole values."
+          },
+          "value": {
+           "type": "string",
+           "description": "The value as given."
+          },
+          "match": {
+           "type": "string",
+           "description": "The match key it was counted under."
+          },
+          "status": {
+           "type": "string",
+           "enum": [
+            "matched",
+            "mismatched",
+            "reconciledByCount",
+            "short",
+            "over"
+           ]
+          },
+          "previousStatus": {
+           "type": "string",
+           "enum": [
+            "matched",
+            "mismatched",
+            "reconciledByCount",
+            "short",
+            "over",
+            null
+           ],
+           "nullable": true,
+           "description": "The group's state before this record; null for a new key."
+          },
+          "expected": {
+           "type": "integer",
+           "description": "The group's expected count after this record."
+          },
+          "confirmed": {
+           "type": "integer"
+          },
+          "latencyMs": {
+           "type": "integer",
+           "description": "Present when this record paired an expectation with a confirmation."
+          },
+          "differences": {
+           "type": "array",
+           "description": "Fields that disagree (only in a mismatched group).",
+           "items": {
+            "type": "object",
+            "required": [
+             "field",
+             "expected",
+             "confirmed"
+            ],
+            "properties": {
+             "field": {
+              "type": "string"
+             },
+             "expected": {
+              "type": "string",
+              "nullable": true
+             },
+             "confirmed": {
+              "type": "string",
+              "nullable": true
+             }
+            }
+           }
+          }
+         }
+        },
+        "example": {
+         "key": "run42-sms",
+         "ignorecase": false,
+         "suffix": 4,
+         "value": "xxxxx7377",
+         "match": "7377",
+         "status": "short",
+         "previousStatus": "short",
+         "expected": 3,
+         "confirmed": 2,
+         "latencyMs": 41875
+        }
+       }
+      }
+     },
+     "400": {
+      "$ref": "#/components/responses/Error"
+     }
+    },
+    "x-free-form-query": {
+     "description": "Every query parameter other than key, value, value64, ignorecase, suffix and perfkey is stored as a field of this side of the record (names lower-cased). wait, strict, grace, sla, fields, status, start, limit and format are reserved (400).",
+     "additionalProperties": {
+      "type": "string"
+     }
+    }
+   },
+   "post": {
+    "tags": [
+     "recon"
+    ],
+    "operationId": "reconConfirmPost",
+    "summary": "Record values confirmed processed (batch: POST the values)",
+    "description": "Records that a record was seen processed (the confirmed side) - from the system under test, an email caught with mail/pop, a text, a webhook, a lookup. Counted per match key like recon/expect: the key goes short, reconciledByCount, matched or over. With perfkey= the processing lag of each pairing is recorded in perf.",
+    "parameters": [
+     {
+      "name": "key",
+      "in": "query",
+      "required": true,
+      "description": "Caller-chosen reconciliation set (a test run, a batch). 1-128 characters: letters, digits and . _ - : @ + =, starting with a letter, digit or +. Case-sensitive.",
+      "schema": {
+       "type": "string"
+      },
+      "example": "run42-sms"
+     },
+     {
+      "name": "value",
+      "in": "query",
+      "required": false,
+      "description": "One record: the value that identifies it - an email address, an order or case number, a reference token. Trimmed; up to 1000 bytes. Required for a GET; for a POST send the values as the body instead. Records are matched by COUNT on their match key: the whole value (case-sensitive unless ignorecase=true), or its last N characters when the key was created with suffix=N. A value sent twice is two records.",
+      "schema": {
+       "type": "string"
+      },
+      "example": "609829094"
+     },
+     {
+      "name": "value64",
+      "in": "query",
+      "required": false,
+      "description": "The match value as base64 (standard or URL-safe). Use it for values containing + & % # - e.g. jane+test@example.com.",
+      "schema": {
+       "type": "string"
+      },
+      "example": "amFuZSt0ZXN0QGV4YW1wbGUuY29t"
+     },
+     {
+      "name": "ignorecase",
+      "in": "query",
+      "required": false,
+      "description": "Match values case-insensitively (Jane@X.com = jane@x.com). The FIRST write to a key fixes this for the life of the key; a later write that asks for the other setting is a 400. Default false.",
+      "schema": {
+       "type": "boolean",
+       "default": false
+      },
+      "example": true
+     },
+     {
+      "name": "suffix",
+      "in": "query",
+      "required": false,
+      "description": "Match on the last N characters (0-64) instead of the whole value, so the expected side can send full values (609829094) and the confirmed side masked ones (xxxxx9094 or 9094). The values given are kept as candidates. The FIRST write to a key fixes this; a later write that asks for another N is a 400. Default 0: whole values.",
+      "schema": {
+       "type": "integer",
+       "minimum": 0,
+       "maximum": 64,
+       "default": 0
+      },
+      "example": 4
+     },
+     {
+      "name": "perfkey",
+      "in": "query",
+      "required": false,
+      "description": "A perf key: each record this call pairs (an expectation meets a confirmation) records its processing lag as a perf/add point - ms from the match key's first expectation, 0 if the confirmation came first - so perf/stats, perf/series and perf/assert work on it.",
+      "schema": {
+       "type": "string"
+      },
+      "example": "run42-sms.lag"
+     },
+     {
+      "name": "format",
+      "in": "query",
+      "required": false,
+      "description": "Format of a POST body. Default: detected - JSON when it starts with [ or {; CSV when the Content-Type says csv or the first line holds a , ; tab or |; otherwise one value per line (blank lines and lines starting with # are skipped).",
+      "schema": {
+       "type": "string",
+       "enum": [
+        "json",
+        "csv",
+        "text"
+       ]
+      },
+      "example": "csv"
+     }
+    ],
+    "responses": {
+     "200": {
+      "description": "Recorded.",
+      "content": {
+       "application/json": {
+        "schema": {
+         "anyOf": [
+          {
+           "type": "object",
+           "required": [
+            "key",
+            "ignorecase",
+            "suffix",
+            "value",
+            "match",
+            "status",
+            "previousStatus",
+            "expected",
+            "confirmed"
+           ],
+           "properties": {
+            "key": {
+             "type": "string"
+            },
+            "ignorecase": {
+             "type": "boolean",
+             "description": "The key's matching rule."
+            },
+            "suffix": {
+             "type": "integer",
+             "description": "The key's matching rule: 0 = whole values."
+            },
+            "value": {
+             "type": "string",
+             "description": "The value as given."
+            },
+            "match": {
+             "type": "string",
+             "description": "The match key it was counted under."
+            },
+            "status": {
+             "type": "string",
+             "enum": [
+              "matched",
+              "mismatched",
+              "reconciledByCount",
+              "short",
+              "over"
+             ]
+            },
+            "previousStatus": {
+             "type": "string",
+             "enum": [
+              "matched",
+              "mismatched",
+              "reconciledByCount",
+              "short",
+              "over",
+              null
+             ],
+             "nullable": true,
+             "description": "The group's state before this record; null for a new key."
+            },
+            "expected": {
+             "type": "integer",
+             "description": "The group's expected count after this record."
+            },
+            "confirmed": {
+             "type": "integer"
+            },
+            "latencyMs": {
+             "type": "integer",
+             "description": "Present when this record paired an expectation with a confirmation."
+            },
+            "differences": {
+             "type": "array",
+             "description": "Fields that disagree (only in a mismatched group).",
+             "items": {
+              "type": "object",
+              "required": [
+               "field",
+               "expected",
+               "confirmed"
+              ],
+              "properties": {
+               "field": {
+                "type": "string"
+               },
+               "expected": {
+                "type": "string",
+                "nullable": true
+               },
+               "confirmed": {
+                "type": "string",
+                "nullable": true
+               }
+              }
+             }
+            }
+           }
+          },
+          {
+           "type": "object",
+           "required": [
+            "key",
+            "ignorecase",
+            "suffix",
+            "format",
+            "received",
+            "recorded",
+            "skipped",
+            "groups",
+            "paired"
+           ],
+           "properties": {
+            "key": {
+             "type": "string"
+            },
+            "ignorecase": {
+             "type": "boolean"
+            },
+            "suffix": {
+             "type": "integer"
+            },
+            "format": {
+             "type": "string",
+             "enum": [
+              "json",
+              "csv",
+              "text"
+             ]
+            },
+            "received": {
+             "type": "integer",
+             "description": "Values in the body."
+            },
+            "recorded": {
+             "type": "integer",
+             "description": "Records counted (every value is a record)."
+            },
+            "skipped": {
+             "type": "integer",
+             "description": "Unusable values (empty, too long); see warnings."
+            },
+            "groups": {
+             "type": "integer",
+             "description": "Distinct match keys in this call."
+            },
+            "paired": {
+             "type": "integer",
+             "description": "Records this call paired with the other side."
+            },
+            "warnings": {
+             "type": "array",
+             "items": {
+              "type": "object",
+              "properties": {
+               "item": {
+                "type": "integer"
+               },
+               "error": {
+                "type": "string"
+               }
+              }
+             }
+            }
+           }
+          }
+         ]
+        },
+        "example": {
+         "key": "run42-sms",
+         "ignorecase": false,
+         "suffix": 4,
+         "value": "xxxxx7377",
+         "match": "7377",
+         "status": "short",
+         "previousStatus": "short",
+         "expected": 3,
+         "confirmed": 2,
+         "latencyMs": 41875
+        }
+       }
+      }
+     },
+     "400": {
+      "$ref": "#/components/responses/Error"
+     }
+    },
+    "requestBody": {
+     "required": false,
+     "description": "Up to 5,000 records (one per value; repeats count): a JSON array of strings or of objects with a \"value\" (other members are fields), or {\"values\": [...]}; a CSV with a header row that has a value column (other columns are fields); or plain text, one value per line. Fields go in the body, not the query string.",
+     "content": {
+      "application/json": {
+       "schema": {
+        "type": "string",
+        "format": "binary"
+       }
+      },
+      "text/csv": {
+       "schema": {
+        "type": "string",
+        "format": "binary"
+       }
+      },
+      "text/plain": {
+       "schema": {
+        "type": "string"
+       }
+      }
+     }
+    }
+   }
+  },
+  "/recon/get": {
+   "get": {
+    "tags": [
+     "recon"
+    ],
+    "operationId": "reconGet",
+    "summary": "Reconciliation counts, or one value's state",
+    "description": "Without value: the counts for the key, in records - expected, confirmed, matched (paired), outstanding (total shortfall), unexpected (total overage), mismatched - plus how many groups are in each state, ambiguousGroups, the processing lag and reconciled. Read from running counters (one BatchGetItem, however many records), or with fields= judged again from every group. With value: the group that value falls under. wait= holds the request until nothing is outstanding; strict=true makes \"not reconciled\" a 412. A key nothing was written to has expected 0 and is never reconciled, so an empty run cannot pass a gate.",
+    "parameters": [
+     {
+      "name": "key",
+      "in": "query",
+      "required": true,
+      "description": "Caller-chosen reconciliation set (a test run, a batch). 1-128 characters: letters, digits and . _ - : @ + =, starting with a letter, digit or +. Case-sensitive.",
+      "schema": {
+       "type": "string"
+      },
+      "example": "run42-sms"
+     },
+     {
+      "name": "value",
+      "in": "query",
+      "required": false,
+      "description": "Report the group this value falls under instead of the counts (404 if its key was never expected or confirmed, unless wait= is given).",
+      "schema": {
+       "type": "string"
+      },
+      "example": "xxxxx7377"
+     },
+     {
+      "name": "value64",
+      "in": "query",
+      "required": false,
+      "description": "The match value as base64 (standard or URL-safe). Use it for values containing + & % # - e.g. jane+test@example.com.",
+      "schema": {
+       "type": "string"
+      },
+      "example": "amFuZSt0ZXN0QGV4YW1wbGUuY29t"
+     },
+     {
+      "name": "wait",
+      "in": "query",
+      "required": false,
+      "description": "Seconds (0-20) to hold the request open until no record is outstanding (with value=: until that key is no longer short). Default 0. Out of time is still a 200 with the counts as they are.",
+      "schema": {
+       "type": "integer",
+       "minimum": 0,
+       "maximum": 20,
+       "default": 0
+      },
+      "example": 20
+     },
+     {
+      "name": "strict",
+      "in": "query",
+      "required": false,
+      "description": "true: answer 412 (same body) unless reconciled is true - so a pipeline step can fail on the status code alone. Default false.",
+      "schema": {
+       "type": "boolean",
+       "default": false
+      },
+      "example": true
+     },
+     {
+      "name": "grace",
+      "in": "query",
+      "required": false,
+      "description": "Seconds. Unexpected records in groups that went over within this many seconds are reported as withinGrace and do not stop reconciled being true: in a load test a confirmation can land before its expectation is written.",
+      "schema": {
+       "type": "integer",
+       "minimum": 0
+      },
+      "example": 30
+     },
+     {
+      "name": "sla",
+      "in": "query",
+      "required": false,
+      "description": "Seconds. Adds overdue: outstanding records in short groups first expected more than this long ago.",
+      "schema": {
+       "type": "integer",
+       "minimum": 1
+      },
+      "example": 300
+     },
+     {
+      "name": "fields",
+      "in": "query",
+      "required": false,
+      "description": "Comma-separated field names that must agree in a 1-vs-1 group: each must be present on BOTH sides and equal, or the group is mismatched. Re-judges every group from the groups themselves (source: scan, up to 50,000 groups, with latency percentiles) instead of the running counters.",
+      "schema": {
+       "type": "string"
+      },
+      "example": "amount,status"
+     }
+    ],
+    "responses": {
+     "200": {
+      "description": "Counts (no value=) or one record (value=).",
+      "content": {
+       "application/json": {
+        "schema": {
+         "anyOf": [
+          {
+           "type": "object",
+           "required": [
+            "key",
+            "source",
+            "expected",
+            "confirmed",
+            "matched",
+            "outstanding",
+            "unexpected",
+            "mismatched",
+            "ambiguousGroups",
+            "groups",
+            "latencyMs",
+            "reconciled",
+            "waitedMs"
+           ],
+           "properties": {
+            "key": {
+             "type": "string"
+            },
+            "source": {
+             "type": "string",
+             "enum": [
+              "counters",
+              "scan"
+             ]
+            },
+            "expected": {
+             "type": "integer",
+             "description": "Records expected."
+            },
+            "confirmed": {
+             "type": "integer",
+             "description": "Records confirmed."
+            },
+            "matched": {
+             "type": "integer",
+             "description": "Records paired: the sum over keys of min(expected, confirmed)."
+            },
+            "outstanding": {
+             "type": "integer",
+             "description": "Records expected and not confirmed: the total shortBy."
+            },
+            "unexpected": {
+             "type": "integer",
+             "description": "Records confirmed and not expected: the total overBy."
+            },
+            "mismatched": {
+             "type": "integer",
+             "description": "Records in mismatched groups."
+            },
+            "ambiguousGroups": {
+             "type": "integer",
+             "description": "Groups where more than one record shares the key on either side: how much of the result rests on counting rather than exact pairing."
+            },
+            "groups": {
+             "type": "object",
+             "required": [
+              "matched",
+              "mismatched",
+              "reconciledByCount",
+              "short",
+              "over"
+             ],
+             "description": "How many groups (match keys) are in each state.",
+             "properties": {
+              "matched": {
+               "type": "integer"
+              },
+              "mismatched": {
+               "type": "integer"
+              },
+              "reconciledByCount": {
+               "type": "integer"
+              },
+              "short": {
+               "type": "integer"
+              },
+              "over": {
+               "type": "integer"
+              }
+             }
+            },
+            "latencyMs": {
+             "type": "object",
+             "required": [
+              "count"
+             ],
+             "description": "Processing lag of paired records, ms. Percentiles only with fields= (source: scan).",
+             "properties": {
+              "count": {
+               "type": "integer"
+              },
+              "mean": {
+               "type": "number"
+              },
+              "min": {
+               "type": "integer",
+               "nullable": true
+              },
+              "max": {
+               "type": "integer",
+               "nullable": true
+              },
+              "p50": {
+               "type": "integer"
+              },
+              "p90": {
+               "type": "integer"
+              },
+              "p95": {
+               "type": "integer"
+              },
+              "p99": {
+               "type": "integer"
+              },
+              "comment": {
+               "type": "string"
+              }
+             }
+            },
+            "graceSeconds": {
+             "type": "integer"
+            },
+            "withinGrace": {
+             "type": "integer"
+            },
+            "slaSeconds": {
+             "type": "integer"
+            },
+            "overdue": {
+             "type": "integer"
+            },
+            "fields": {
+             "type": "array",
+             "items": {
+              "type": "string"
+             }
+            },
+            "truncated": {
+             "type": "boolean"
+            },
+            "reconciled": {
+             "type": "boolean",
+             "description": "Something was expected, nothing is outstanding or mismatched, and nothing is unexpected (beyond grace)."
+            },
+            "ignorecase": {
+             "type": "boolean"
+            },
+            "suffix": {
+             "type": "integer"
+            },
+            "expiresTime": {
+             "type": "integer",
+             "description": "When the key's data is deleted (30 days after its first write)."
+            },
+            "comment": {
+             "type": "string"
+            },
+            "waitedMs": {
+             "type": "integer"
+            }
+           }
+          },
+          {
+           "type": "object",
+           "required": [
+            "key",
+            "value",
+            "match",
+            "exists",
+            "status",
+            "group",
+            "reconciled",
+            "waitedMs"
+           ],
+           "properties": {
+            "key": {
+             "type": "string"
+            },
+            "value": {
+             "type": "string"
+            },
+            "match": {
+             "type": "string",
+             "description": "The match key the value falls under."
+            },
+            "exists": {
+             "type": "boolean",
+             "description": "false only with wait= (without it an unknown key is a 404)."
+            },
+            "status": {
+             "type": "string",
+             "enum": [
+              "matched",
+              "mismatched",
+              "reconciledByCount",
+              "short",
+              "over",
+              null
+             ],
+             "nullable": true
+            },
+            "group": {
+             "type": "object",
+             "required": [
+              "value",
+              "status",
+              "expected",
+              "confirmed",
+              "candidates"
+             ],
+             "description": "One match key and every record that shares it.",
+             "properties": {
+              "value": {
+               "type": "string",
+               "description": "The match key (with suffix=N, the last N characters)."
+              },
+              "status": {
+               "type": "string",
+               "enum": [
+                "matched",
+                "mismatched",
+                "reconciledByCount",
+                "short",
+                "over"
+               ]
+              },
+              "expected": {
+               "type": "integer",
+               "description": "Records expected under this key."
+              },
+              "confirmed": {
+               "type": "integer",
+               "description": "Records confirmed under this key."
+              },
+              "shortBy": {
+               "type": "integer",
+               "description": "expected - confirmed (short groups)."
+              },
+              "overBy": {
+               "type": "integer",
+               "description": "confirmed - expected (over groups)."
+              },
+              "candidates": {
+               "type": "array",
+               "items": {
+                "type": "string"
+               },
+               "description": "The values the expected side gave under this key (up to 100). For a short group with several, one of them is missing - which one cannot be told."
+              },
+              "confirmedValues": {
+               "type": "array",
+               "items": {
+                "type": "string"
+               },
+               "description": "The values the confirmed side gave, when they are not all among the candidates (e.g. masked ones)."
+              },
+              "expectedTime": {
+               "type": "integer",
+               "description": "First expectation (UTC epoch seconds)."
+              },
+              "confirmedTime": {
+               "type": "integer",
+               "description": "First confirmation."
+              },
+              "latencyMs": {
+               "type": "integer",
+               "description": "First confirmation minus first expectation, ms (negative: a confirmation came first)."
+              },
+              "expectedFields": {
+               "type": "object",
+               "additionalProperties": {
+                "type": "string"
+               },
+               "description": "Fields as given by the first record on this side."
+              },
+              "confirmedFields": {
+               "type": "object",
+               "additionalProperties": {
+                "type": "string"
+               },
+               "description": "Fields as given by the first record on this side."
+              },
+              "differences": {
+               "type": "array",
+               "description": "Fields that disagree (only in a mismatched group).",
+               "items": {
+                "type": "object",
+                "required": [
+                 "field",
+                 "expected",
+                 "confirmed"
+                ],
+                "properties": {
+                 "field": {
+                  "type": "string"
+                 },
+                 "expected": {
+                  "type": "string",
+                  "nullable": true
+                 },
+                 "confirmed": {
+                  "type": "string",
+                  "nullable": true
+                 }
+                }
+               }
+              },
+              "checks": {
+               "type": "integer",
+               "description": "Times recon/cyclepop handed it out."
+              }
+             },
+             "nullable": true
+            },
+            "reconciled": {
+             "type": "boolean",
+             "description": "true when the group is matched or reconciledByCount."
+            },
+            "waitedMs": {
+             "type": "integer"
+            }
+           }
+          }
+         ]
+        },
+        "example": {
+         "key": "run42-sms",
+         "source": "counters",
+         "expected": 1000,
+         "confirmed": 922,
+         "matched": 922,
+         "outstanding": 78,
+         "unexpected": 0,
+         "mismatched": 0,
+         "ambiguousGroups": 41,
+         "groups": {
+          "matched": 845,
+          "mismatched": 0,
+          "reconciledByCount": 34,
+          "short": 78,
+          "over": 0
+         },
+         "latencyMs": {
+          "count": 922,
+          "mean": 38211.4,
+          "min": 9120,
+          "max": 118042
+         },
+         "reconciled": false,
+         "ignorecase": false,
+         "suffix": 4,
+         "expiresTime": 1798272000,
+         "waitedMs": 20012
+        }
+       }
+      }
+     },
+     "412": {
+      "description": "strict=true and not reconciled (the same body).",
+      "content": {
+       "application/json": {
+        "schema": {
+         "anyOf": [
+          {
+           "type": "object",
+           "required": [
+            "key",
+            "source",
+            "expected",
+            "confirmed",
+            "matched",
+            "outstanding",
+            "unexpected",
+            "mismatched",
+            "ambiguousGroups",
+            "groups",
+            "latencyMs",
+            "reconciled",
+            "waitedMs"
+           ],
+           "properties": {
+            "key": {
+             "type": "string"
+            },
+            "source": {
+             "type": "string",
+             "enum": [
+              "counters",
+              "scan"
+             ]
+            },
+            "expected": {
+             "type": "integer",
+             "description": "Records expected."
+            },
+            "confirmed": {
+             "type": "integer",
+             "description": "Records confirmed."
+            },
+            "matched": {
+             "type": "integer",
+             "description": "Records paired: the sum over keys of min(expected, confirmed)."
+            },
+            "outstanding": {
+             "type": "integer",
+             "description": "Records expected and not confirmed: the total shortBy."
+            },
+            "unexpected": {
+             "type": "integer",
+             "description": "Records confirmed and not expected: the total overBy."
+            },
+            "mismatched": {
+             "type": "integer",
+             "description": "Records in mismatched groups."
+            },
+            "ambiguousGroups": {
+             "type": "integer",
+             "description": "Groups where more than one record shares the key on either side: how much of the result rests on counting rather than exact pairing."
+            },
+            "groups": {
+             "type": "object",
+             "required": [
+              "matched",
+              "mismatched",
+              "reconciledByCount",
+              "short",
+              "over"
+             ],
+             "description": "How many groups (match keys) are in each state.",
+             "properties": {
+              "matched": {
+               "type": "integer"
+              },
+              "mismatched": {
+               "type": "integer"
+              },
+              "reconciledByCount": {
+               "type": "integer"
+              },
+              "short": {
+               "type": "integer"
+              },
+              "over": {
+               "type": "integer"
+              }
+             }
+            },
+            "latencyMs": {
+             "type": "object",
+             "required": [
+              "count"
+             ],
+             "description": "Processing lag of paired records, ms. Percentiles only with fields= (source: scan).",
+             "properties": {
+              "count": {
+               "type": "integer"
+              },
+              "mean": {
+               "type": "number"
+              },
+              "min": {
+               "type": "integer",
+               "nullable": true
+              },
+              "max": {
+               "type": "integer",
+               "nullable": true
+              },
+              "p50": {
+               "type": "integer"
+              },
+              "p90": {
+               "type": "integer"
+              },
+              "p95": {
+               "type": "integer"
+              },
+              "p99": {
+               "type": "integer"
+              },
+              "comment": {
+               "type": "string"
+              }
+             }
+            },
+            "graceSeconds": {
+             "type": "integer"
+            },
+            "withinGrace": {
+             "type": "integer"
+            },
+            "slaSeconds": {
+             "type": "integer"
+            },
+            "overdue": {
+             "type": "integer"
+            },
+            "fields": {
+             "type": "array",
+             "items": {
+              "type": "string"
+             }
+            },
+            "truncated": {
+             "type": "boolean"
+            },
+            "reconciled": {
+             "type": "boolean",
+             "description": "Something was expected, nothing is outstanding or mismatched, and nothing is unexpected (beyond grace)."
+            },
+            "ignorecase": {
+             "type": "boolean"
+            },
+            "suffix": {
+             "type": "integer"
+            },
+            "expiresTime": {
+             "type": "integer",
+             "description": "When the key's data is deleted (30 days after its first write)."
+            },
+            "comment": {
+             "type": "string"
+            },
+            "waitedMs": {
+             "type": "integer"
+            }
+           }
+          },
+          {
+           "type": "object",
+           "required": [
+            "key",
+            "value",
+            "match",
+            "exists",
+            "status",
+            "group",
+            "reconciled",
+            "waitedMs"
+           ],
+           "properties": {
+            "key": {
+             "type": "string"
+            },
+            "value": {
+             "type": "string"
+            },
+            "match": {
+             "type": "string",
+             "description": "The match key the value falls under."
+            },
+            "exists": {
+             "type": "boolean",
+             "description": "false only with wait= (without it an unknown key is a 404)."
+            },
+            "status": {
+             "type": "string",
+             "enum": [
+              "matched",
+              "mismatched",
+              "reconciledByCount",
+              "short",
+              "over",
+              null
+             ],
+             "nullable": true
+            },
+            "group": {
+             "type": "object",
+             "required": [
+              "value",
+              "status",
+              "expected",
+              "confirmed",
+              "candidates"
+             ],
+             "description": "One match key and every record that shares it.",
+             "properties": {
+              "value": {
+               "type": "string",
+               "description": "The match key (with suffix=N, the last N characters)."
+              },
+              "status": {
+               "type": "string",
+               "enum": [
+                "matched",
+                "mismatched",
+                "reconciledByCount",
+                "short",
+                "over"
+               ]
+              },
+              "expected": {
+               "type": "integer",
+               "description": "Records expected under this key."
+              },
+              "confirmed": {
+               "type": "integer",
+               "description": "Records confirmed under this key."
+              },
+              "shortBy": {
+               "type": "integer",
+               "description": "expected - confirmed (short groups)."
+              },
+              "overBy": {
+               "type": "integer",
+               "description": "confirmed - expected (over groups)."
+              },
+              "candidates": {
+               "type": "array",
+               "items": {
+                "type": "string"
+               },
+               "description": "The values the expected side gave under this key (up to 100). For a short group with several, one of them is missing - which one cannot be told."
+              },
+              "confirmedValues": {
+               "type": "array",
+               "items": {
+                "type": "string"
+               },
+               "description": "The values the confirmed side gave, when they are not all among the candidates (e.g. masked ones)."
+              },
+              "expectedTime": {
+               "type": "integer",
+               "description": "First expectation (UTC epoch seconds)."
+              },
+              "confirmedTime": {
+               "type": "integer",
+               "description": "First confirmation."
+              },
+              "latencyMs": {
+               "type": "integer",
+               "description": "First confirmation minus first expectation, ms (negative: a confirmation came first)."
+              },
+              "expectedFields": {
+               "type": "object",
+               "additionalProperties": {
+                "type": "string"
+               },
+               "description": "Fields as given by the first record on this side."
+              },
+              "confirmedFields": {
+               "type": "object",
+               "additionalProperties": {
+                "type": "string"
+               },
+               "description": "Fields as given by the first record on this side."
+              },
+              "differences": {
+               "type": "array",
+               "description": "Fields that disagree (only in a mismatched group).",
+               "items": {
+                "type": "object",
+                "required": [
+                 "field",
+                 "expected",
+                 "confirmed"
+                ],
+                "properties": {
+                 "field": {
+                  "type": "string"
+                 },
+                 "expected": {
+                  "type": "string",
+                  "nullable": true
+                 },
+                 "confirmed": {
+                  "type": "string",
+                  "nullable": true
+                 }
+                }
+               }
+              },
+              "checks": {
+               "type": "integer",
+               "description": "Times recon/cyclepop handed it out."
+              }
+             },
+             "nullable": true
+            },
+            "reconciled": {
+             "type": "boolean",
+             "description": "true when the group is matched or reconciledByCount."
+            },
+            "waitedMs": {
+             "type": "integer"
+            }
+           }
+          }
+         ]
+        },
+        "example": {
+         "key": "run42-sms",
+         "source": "counters",
+         "expected": 1000,
+         "confirmed": 922,
+         "matched": 922,
+         "outstanding": 78,
+         "unexpected": 0,
+         "mismatched": 0,
+         "ambiguousGroups": 41,
+         "groups": {
+          "matched": 845,
+          "mismatched": 0,
+          "reconciledByCount": 34,
+          "short": 78,
+          "over": 0
+         },
+         "latencyMs": {
+          "count": 922,
+          "mean": 38211.4,
+          "min": 9120,
+          "max": 118042
+         },
+         "reconciled": false,
+         "ignorecase": false,
+         "suffix": 4,
+         "expiresTime": 1798272000,
+         "waitedMs": 20012
+        }
+       }
+      }
+     },
+     "400": {
+      "$ref": "#/components/responses/Error"
+     },
+     "404": {
+      "$ref": "#/components/responses/Error"
+     }
+    }
+   }
+  },
+  "/recon/list": {
+   "get": {
+    "tags": [
+     "recon"
+    ],
+    "operationId": "reconList",
+    "summary": "The groups behind a count",
+    "description": "Groups (match keys) with one status, unreconciled (short, over and mismatched: the values still to reconcile), or all - oldest in their state first; for short, the one recon/cyclepop handed out least recently first. Each has its counts, shortBy or overBy, the candidates, the lag and, when mismatched, the differences. format=csv for a report. With fields= every group is judged again against those fields.",
+    "parameters": [
+     {
+      "name": "key",
+      "in": "query",
+      "required": true,
+      "description": "Caller-chosen reconciliation set (a test run, a batch). 1-128 characters: letters, digits and . _ - : @ + =, starting with a letter, digit or +. Case-sensitive.",
+      "schema": {
+       "type": "string"
+      },
+      "example": "run42-sms"
+     },
+     {
+      "name": "status",
+      "in": "query",
+      "required": false,
+      "description": "matched, mismatched, reconciledByCount, short, over, unreconciled (short + over + mismatched) or all (default). Case-insensitive.",
+      "schema": {
+       "type": "string",
+       "enum": [
+        "matched",
+        "mismatched",
+        "reconciledByCount",
+        "short",
+        "over",
+        "unreconciled",
+        "all"
+       ],
+       "default": "all"
+      },
+      "example": "unreconciled"
+     },
+     {
+      "name": "start",
+      "in": "query",
+      "required": false,
+      "description": "First record to return, 1-based. start + limit may reach 10,000.",
+      "schema": {
+       "type": "integer",
+       "minimum": 1,
+       "default": 1
+      },
+      "example": 1
+     },
+     {
+      "name": "limit",
+      "in": "query",
+      "required": false,
+      "description": "Records to return, 1-1000 (default 100).",
+      "schema": {
+       "type": "integer",
+       "minimum": 1,
+       "maximum": 1000,
+       "default": 100
+      },
+      "example": 100
+     },
+     {
+      "name": "format",
+      "in": "query",
+      "required": false,
+      "description": "json (default) or csv: value, status, expected, confirmed, shortBy, overBy, candidates, confirmedValues, expectedTime, confirmedTime, latencyMs, differences, then expected.<field> / confirmed.<field> for the fields on the page.",
+      "schema": {
+       "type": "string",
+       "enum": [
+        "json",
+        "csv"
+       ],
+       "default": "json"
+      },
+      "example": "csv"
+     },
+     {
+      "name": "fields",
+      "in": "query",
+      "required": false,
+      "description": "Comma-separated field names that must agree in a 1-vs-1 group: each must be present on BOTH sides and equal, or the group is mismatched. Re-judges every group from the groups themselves (source: scan, up to 50,000 groups, with latency percentiles) instead of the running counters.",
+      "schema": {
+       "type": "string"
+      },
+      "example": "amount,status"
+     }
+    ],
+    "responses": {
+     "200": {
+      "description": "OK",
+      "content": {
+       "application/json": {
+        "schema": {
+         "type": "object",
+         "required": [
+          "key",
+          "status",
+          "total",
+          "start",
+          "returned",
+          "groups"
+         ],
+         "properties": {
+          "key": {
+           "type": "string"
+          },
+          "status": {
+           "type": "string",
+           "enum": [
+            "matched",
+            "mismatched",
+            "reconciledByCount",
+            "short",
+            "over",
+            "unreconciled",
+            "all"
+           ]
+          },
+          "total": {
+           "type": "integer",
+           "description": "Groups with this status."
+          },
+          "start": {
+           "type": "integer"
+          },
+          "returned": {
+           "type": "integer"
+          },
+          "groups": {
+           "type": "array",
+           "items": {
+            "type": "object",
+            "required": [
+             "value",
+             "status",
+             "expected",
+             "confirmed",
+             "candidates"
+            ],
+            "description": "One match key and every record that shares it.",
+            "properties": {
+             "value": {
+              "type": "string",
+              "description": "The match key (with suffix=N, the last N characters)."
+             },
+             "status": {
+              "type": "string",
+              "enum": [
+               "matched",
+               "mismatched",
+               "reconciledByCount",
+               "short",
+               "over"
+              ]
+             },
+             "expected": {
+              "type": "integer",
+              "description": "Records expected under this key."
+             },
+             "confirmed": {
+              "type": "integer",
+              "description": "Records confirmed under this key."
+             },
+             "shortBy": {
+              "type": "integer",
+              "description": "expected - confirmed (short groups)."
+             },
+             "overBy": {
+              "type": "integer",
+              "description": "confirmed - expected (over groups)."
+             },
+             "candidates": {
+              "type": "array",
+              "items": {
+               "type": "string"
+              },
+              "description": "The values the expected side gave under this key (up to 100). For a short group with several, one of them is missing - which one cannot be told."
+             },
+             "confirmedValues": {
+              "type": "array",
+              "items": {
+               "type": "string"
+              },
+              "description": "The values the confirmed side gave, when they are not all among the candidates (e.g. masked ones)."
+             },
+             "expectedTime": {
+              "type": "integer",
+              "description": "First expectation (UTC epoch seconds)."
+             },
+             "confirmedTime": {
+              "type": "integer",
+              "description": "First confirmation."
+             },
+             "latencyMs": {
+              "type": "integer",
+              "description": "First confirmation minus first expectation, ms (negative: a confirmation came first)."
+             },
+             "expectedFields": {
+              "type": "object",
+              "additionalProperties": {
+               "type": "string"
+              },
+              "description": "Fields as given by the first record on this side."
+             },
+             "confirmedFields": {
+              "type": "object",
+              "additionalProperties": {
+               "type": "string"
+              },
+              "description": "Fields as given by the first record on this side."
+             },
+             "differences": {
+              "type": "array",
+              "description": "Fields that disagree (only in a mismatched group).",
+              "items": {
+               "type": "object",
+               "required": [
+                "field",
+                "expected",
+                "confirmed"
+               ],
+               "properties": {
+                "field": {
+                 "type": "string"
+                },
+                "expected": {
+                 "type": "string",
+                 "nullable": true
+                },
+                "confirmed": {
+                 "type": "string",
+                 "nullable": true
+                }
+               }
+              }
+             },
+             "checks": {
+              "type": "integer",
+              "description": "Times recon/cyclepop handed it out."
+             }
+            }
+           }
+          },
+          "fields": {
+           "type": "array",
+           "items": {
+            "type": "string"
+           }
+          },
+          "truncated": {
+           "type": "boolean"
+          },
+          "comment": {
+           "type": "string"
+          }
+         }
+        },
+        "example": {
+         "key": "run42-sms",
+         "status": "unreconciled",
+         "total": 78,
+         "start": 1,
+         "returned": 1,
+         "groups": [
+          {
+           "value": "7377",
+           "status": "short",
+           "expected": 3,
+           "confirmed": 2,
+           "shortBy": 1,
+           "candidates": [
+            "609857377",
+            "609887377",
+            "609937377"
+           ],
+           "confirmedValues": [
+            "xxxxx7377"
+           ],
+           "expectedTime": 1795680000,
+           "confirmedTime": 1795680042,
+           "latencyMs": 41875
+          }
+         ]
+        }
+       },
+       "text/csv": {
+        "schema": {
+         "type": "string"
+        }
+       }
+      }
+     },
+     "400": {
+      "$ref": "#/components/responses/Error"
+     }
+    }
+   }
+  },
+  "/recon/cyclepop": {
+   "get": {
+    "tags": [
+     "recon"
+    ],
+    "operationId": "reconCyclepop",
+    "summary": "The next short key to check",
+    "description": "The short group handed out least recently; handing it out moves it to the back, so concurrent checkers each get a different one and every short key comes round in turn. Not consuming: it stays short until enough confirmations arrive. For a checker that looks each one up in the system under test.",
+    "parameters": [
+     {
+      "name": "key",
+      "in": "query",
+      "required": true,
+      "description": "Caller-chosen reconciliation set (a test run, a batch). 1-128 characters: letters, digits and . _ - : @ + =, starting with a letter, digit or +. Case-sensitive.",
+      "schema": {
+       "type": "string"
+      },
+      "example": "run42-sms"
+     }
+    ],
+    "responses": {
+     "200": {
+      "description": "A record, or exhausted: true when nothing is outstanding.",
+      "content": {
+       "application/json": {
+        "schema": {
+         "type": "object",
+         "required": [
+          "key",
+          "exhausted",
+          "group",
+          "value"
+         ],
+         "properties": {
+          "key": {
+           "type": "string"
+          },
+          "exhausted": {
+           "type": "boolean",
+           "description": "true: no group is short."
+          },
+          "group": {
+           "type": "object",
+           "required": [
+            "value",
+            "status",
+            "expected",
+            "confirmed",
+            "candidates"
+           ],
+           "description": "One match key and every record that shares it.",
+           "properties": {
+            "value": {
+             "type": "string",
+             "description": "The match key (with suffix=N, the last N characters)."
+            },
+            "status": {
+             "type": "string",
+             "enum": [
+              "matched",
+              "mismatched",
+              "reconciledByCount",
+              "short",
+              "over"
+             ]
+            },
+            "expected": {
+             "type": "integer",
+             "description": "Records expected under this key."
+            },
+            "confirmed": {
+             "type": "integer",
+             "description": "Records confirmed under this key."
+            },
+            "shortBy": {
+             "type": "integer",
+             "description": "expected - confirmed (short groups)."
+            },
+            "overBy": {
+             "type": "integer",
+             "description": "confirmed - expected (over groups)."
+            },
+            "candidates": {
+             "type": "array",
+             "items": {
+              "type": "string"
+             },
+             "description": "The values the expected side gave under this key (up to 100). For a short group with several, one of them is missing - which one cannot be told."
+            },
+            "confirmedValues": {
+             "type": "array",
+             "items": {
+              "type": "string"
+             },
+             "description": "The values the confirmed side gave, when they are not all among the candidates (e.g. masked ones)."
+            },
+            "expectedTime": {
+             "type": "integer",
+             "description": "First expectation (UTC epoch seconds)."
+            },
+            "confirmedTime": {
+             "type": "integer",
+             "description": "First confirmation."
+            },
+            "latencyMs": {
+             "type": "integer",
+             "description": "First confirmation minus first expectation, ms (negative: a confirmation came first)."
+            },
+            "expectedFields": {
+             "type": "object",
+             "additionalProperties": {
+              "type": "string"
+             },
+             "description": "Fields as given by the first record on this side."
+            },
+            "confirmedFields": {
+             "type": "object",
+             "additionalProperties": {
+              "type": "string"
+             },
+             "description": "Fields as given by the first record on this side."
+            },
+            "differences": {
+             "type": "array",
+             "description": "Fields that disagree (only in a mismatched group).",
+             "items": {
+              "type": "object",
+              "required": [
+               "field",
+               "expected",
+               "confirmed"
+              ],
+              "properties": {
+               "field": {
+                "type": "string"
+               },
+               "expected": {
+                "type": "string",
+                "nullable": true
+               },
+               "confirmed": {
+                "type": "string",
+                "nullable": true
+               }
+              }
+             }
+            },
+            "checks": {
+             "type": "integer",
+             "description": "Times recon/cyclepop handed it out."
+            }
+           },
+           "nullable": true
+          },
+          "value": {
+           "type": "string",
+           "nullable": true,
+           "description": "The match key to look up."
+          },
+          "checks": {
+           "type": "integer"
+          },
+          "comment": {
+           "type": "string"
+          }
+         }
+        },
+        "example": {
+         "key": "run42-sms",
+         "exhausted": false,
+         "value": "0661",
+         "checks": 2,
+         "group": {
+          "value": "0661",
+          "status": "short",
+          "expected": 1,
+          "confirmed": 0,
+          "shortBy": 1,
+          "candidates": [
+           "609850661"
+          ],
+          "expectedTime": 1795680000,
+          "checks": 2
+         }
+        }
+       }
+      }
+     },
+     "400": {
+      "$ref": "#/components/responses/Error"
+     }
+    }
+   }
+  },
+  "/recon/clear": {
+   "get": {
+    "tags": [
+     "recon"
+    ],
+    "operationId": "reconClear",
+    "summary": "Delete everything under a key",
+    "description": "Deletes the groups, the counters and the key's settings (so ignorecase and suffix can be chosen again). Up to 10,000 items per call: call again while more is true. Also clears a key written by the first version of recon.",
+    "parameters": [
+     {
+      "name": "key",
+      "in": "query",
+      "required": true,
+      "description": "Caller-chosen reconciliation set (a test run, a batch). 1-128 characters: letters, digits and . _ - : @ + =, starting with a letter, digit or +. Case-sensitive.",
+      "schema": {
+       "type": "string"
+      },
+      "example": "run42-sms"
+     }
+    ],
+    "responses": {
+     "200": {
+      "description": "OK",
+      "content": {
+       "application/json": {
+        "schema": {
+         "type": "object",
+         "required": [
+          "key",
+          "deleted",
+          "cleared",
+          "more",
+          "comment"
+         ],
+         "properties": {
+          "key": {
+           "type": "string"
+          },
+          "deleted": {
+           "type": "integer"
+          },
+          "cleared": {
+           "type": "boolean"
+          },
+          "more": {
+           "type": "boolean",
+           "description": "true: call again (up to 10,000 items per call)."
+          },
+          "comment": {
+           "type": "string"
+          }
+         }
+        },
+        "example": {
+         "key": "run42-sms",
+         "deleted": 973,
+         "cleared": true,
+         "more": false,
+         "comment": "cleared"
+        }
+       }
+      }
+     },
+     "400": {
+      "$ref": "#/components/responses/Error"
+     }
+    }
+   }
+  }
+ }
+}

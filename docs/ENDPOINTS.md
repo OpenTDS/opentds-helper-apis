@@ -83,7 +83,7 @@ the pre-v1 names, for anyone porting a script.
 | v1 | Params | Old |
 |---|---|---|
 | `totp/set` | `key`*, `user`*, `secret`*, `digits`, `period`, `algorithm` | `/totp/savesecret` |
-| `totp/get` | `key`* + `user`*, or `secret` (stateless); `digits`, `period`, `algorithm` with `secret` | `/totp/getcode` |
+| `totp/get` | `key`* + `user`*, or `secret` (stateless); `digits`, `period`, `algorithm` with `secret`; `time` (codes for that moment, UTC epoch seconds) | `/totp/getcode` |
 
 ## qr — QR codes
 
@@ -103,19 +103,58 @@ the pre-v1 names, for anyone porting a script.
 | `perf/clear` | `key`* | `/perf/clear` |
 | `perf/export` | `key`*, `format` (csv/json), `limit`, `since`, `until` | `/perf/export` |
 
-## voice — spoken utterances for voice interfaces
+## recon — reconcile what a test submitted with what was processed
 
-New in v1 (no pre-v1 equivalent). `ref` = a generated utterance (kept 30 days after its last
-use); `key` = saved audio (kept until deleted) — the same two words as mail attachments.
+New in v1 (no pre-v1 equivalent). Every `expect` and `confirm` is one record; records are
+matched **by count** per match key — the whole value, or its last N characters with
+`suffix=N` (so full values can meet masked ones). Each key (group) is `matched`,
+`mismatched` (1 vs 1, a field differs), `reconciledByCount` (equal counts above 1), `short`
+or `over`. Any parameter not listed on `expect`/`confirm` is a field. A key is kept 30 days
+from its first write.
+
+| v1 | Params |
+|---|---|
+| `recon/expect` (+POST; body = JSON, CSV with a `value` column, or one value per line, up to 5,000) | `key`*, `value`* \| `value64` (GET), `suffix` and `ignorecase` (the first write fixes them), `perfkey`, `format` (POST), any other name = a field |
+| `recon/confirm` (+POST) | as `recon/expect` |
+| `recon/get` | `key`*, `value` \| `value64` (one group), `wait` (0–20), `strict` (412 unless reconciled), `grace`, `sla`, `fields` |
+| `recon/list` | `key`*, `status` (`matched` \| `mismatched` \| `reconciledByCount` \| `short` \| `over` \| `unreconciled` \| `all`), `start`, `limit` (≤ 1000), `format` (json/csv), `fields` |
+| `recon/cyclepop` | `key`* |
+| `recon/clear` | `key`* |
+
+## voice — speaking to a voice interface, and hearing what it says back
+
+New in v1 (no pre-v1 equivalent). `ref` = a generated utterance (`v...`, kept 30 days after its
+last use) or a listening (`h...`: audio given to `voice/listen` and the words heard in it, kept
+30 days); `key` = saved audio (kept until deleted) — the same two words as mail attachments.
 
 | v1 | Params |
 |---|---|
 | `voice/say` (+POST; JSON body adds `segments`, `pronounce`) | `text` \| `text64` (may carry `[tags]`), `emotion`, `voice` (name \| `random`), `language`, `engine` (`neural` default \| `standard` \| `generative`), `format` (`mp3` default \| `ogg` \| `wav` \| `pcm` \| `mulaw` \| `alaw`), `hz`, `seed`, `strict`, `url`, `view`, `download`, `play` (a page that plays it, no player); or `ref` \| `key` in place of text to say a stored utterance again |
-| `voice/get` | `ref` \| `key`, `url`, `view`, `download`, `play` |
-| `voice/save` (+POST) | `key`*, `ref` (pin a generated utterance; POST body = a recording, raw bytes as application/octet-stream or base64 text), `filename` |
+| `voice/get` | `ref` (`v...` or `h...`) \| `key`, `url`, `view`, `download`, `play` |
+| `voice/save` (+POST) | `key`*, `ref` (pin a generated utterance, or keep heard audio; POST body = a recording, raw bytes as application/octet-stream or base64 text), `filename` |
 | `voice/delete` | `key`* |
 | `voice/voices` | `language`, `engine` |
 | `voice/tags` | — |
+| `voice/listen` (+POST) | The audio: POST body (raw bytes as application/octet-stream, base64 text, or JSON `audio` \| `chunks`), or `ref` \| `key`. `format` (`pcm` \| `mulaw` \| `alaw`, headerless audio only), `hz` (required with `pcm`), `language` (`en-AU` default \| a code \| `auto`), `wait` (0–20, default 20). WAV, MP3 and raw samples only |
+| `voice/find` (+POST) | The audio as for `voice/listen`; one of `text` \| `text64`, `regex` \| `regex64`, `left` (+ `right`) \| `left64`, `right64`; `fuzzy` (`true` \| 0.5–1), `exact`, `ignorecase`, `context` (words, default 5), `limit` (default 20), `wait` |
+| `voice/compare` (+POST) | The audio as for `voice/listen`; `text` \| `text64` \| `otherref` \| `otherkey` (none: round trip of an utterance), `min` (adds `pass`), `wait` |
+
+## health — which build is deployed, end-to-end self-test
+
+New in v1 (no pre-v1 equivalent). Every response also carries the build as the `X-Build` header.
+
+| v1 | Params |
+|---|---|
+| `health/get` | — (build, region, services, last check, `traceUrl` / `traceDataUrl` / `traceConsoleUrl`; calls nothing) |
+| `health/check` | `fresh` (run now unless the last check is under 30 s old; otherwise cached for 60 s), `strict` (503 unless `status` is `ok`); returns `traceUrl` (this request) and `checkTraceUrl` (the run behind the result), both public `trace/get` pages |
+
+## trace — where a request's time went (X-Ray, cleaned for the public)
+
+New in v1 (no pre-v1 equivalent).
+
+| v1 | Params |
+|---|---|
+| `trace/get` | `ref`* (X-Ray trace id), `format` (`json` default \| `html`), `wait` (0–20) |
 
 ## discovery
 

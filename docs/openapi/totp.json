@@ -144,7 +144,7 @@
     ],
     "operationId": "totpGet",
     "summary": "Get the current, next and previous TOTP codes",
-    "description": "Either key + user (codes from the stored secret) or secret alone (stateless: nothing is stored). Returns code, nextCode, previousCode and secondsRemaining. If secondsRemaining is small (under ~3 s) the code may expire before the system under test checks it - submit nextCode after waiting, or just wait and call again.",
+    "description": "Either key + user (codes from the stored secret) or secret alone (stateless: nothing is stored). Returns code, nextCode, previousCode and secondsRemaining. If secondsRemaining is small (under ~3 s) the code may expire before the system under test checks it - submit nextCode after waiting, or just wait and call again. With time=EPOCH the codes are for that moment instead of now - e.g. secret=GEZDGNBVGY3TQOJQGEZDGNBVGY3TQOJQ&digits=8&time=59 returns the RFC 6238 vector 94287082.",
     "parameters": [
      {
       "name": "key",
@@ -210,6 +210,16 @@
        ]
       },
       "description": "HMAC algorithm: sha1 (default), sha256 or sha512."
+     },
+     {
+      "name": "time",
+      "in": "query",
+      "required": false,
+      "schema": {
+       "type": "number"
+      },
+      "description": "Codes for this moment, UTC epoch seconds (fractions allowed), instead of now. secondsRemaining, nextCode and previousCode are relative to it, and atTime echoes it. Use it to check a deployment against the RFC 6238 test vectors or to replay the code a failed run was given.",
+      "example": 59
      }
     ],
     "responses": {
@@ -255,6 +265,10 @@
           },
           "algorithm": {
            "type": "string"
+          },
+          "atTime": {
+           "type": "number",
+           "description": "The time= the codes were generated for (present only with time=)."
           }
          }
         },

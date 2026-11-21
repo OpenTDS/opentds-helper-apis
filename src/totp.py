@@ -3,6 +3,8 @@
   /v1/totp/set?key=K&user=U&secret=BASE32[&digits][&period][&algorithm]
   /v1/totp/get?key=K&user=U          codes from the stored secret
   /v1/totp/get?secret=BASE32         stateless: codes straight from a secret
+  ...&time=EPOCH                     codes for that moment instead of now (checks
+                                     against RFC 6238 vectors, replaying a failure)
 """
 import base64
 import hashlib
@@ -66,9 +68,24 @@ def _validate_secret(secret):
         raise ApiError(400, "'secret' is not a valid base32 TOTP secret.", detail=str(e))
 
 
-def _codes(secret, digits, period, algorithm):
-    now = time.time()
-    return {
+# 0 .. 10^11 (the year 5138): wide enough for every RFC 6238 vector (20000000000).
+TIME_MAX = 100_000_000_000
+
+
+def _at(req):
+    """time= (UTC epoch seconds, fractions allowed) or None for now."""
+    t = req.number('time')
+    if t is None:
+        return None
+    if not 0 <= t <= TIME_MAX:
+        raise ApiError(400, "'time' must be UTC epoch seconds between 0 and %d." % TIME_MAX,
+                       received=req.get('time'))
+    return t
+
+
+def _codes(secret, digits, period, algorithm, at=None):
+    now = time.time() if at is None else at
+    out = {
         'code': totp(secret, now, period, digits, algorithm),
         'nextCode': totp(secret, now + period, period, digits, algorithm),
         'previousCode': totp(secret, now - period, period, digits, algorithm),
@@ -77,6 +94,10 @@ def _codes(secret, digits, period, algorithm):
         'digits': digits,
         'algorithm': algorithm,
     }
+    if at is not None:
+        # Echoed so a log shows these are codes for a chosen moment, not for now.
+        out['atTime'] = at if at != int(at) else int(at)
+    return out
 
 
 def set_secret(req):
@@ -98,16 +119,17 @@ def get_code(req):
     if secret and not req.text('key'):
         digits, period, algorithm = _options(req)
         _validate_secret(secret)
-        return respond(200, _codes(secret, digits, period, algorithm))
+        return respond(200, _codes(secret, digits, period, algorithm, _at(req)))
 
     key = req.key()
     user = req.text('user', required=True)
+    at = _at(req)
     it = table().get_item(Key={'key': key, 'user': user}).get('Item')
     if not it:
         raise ApiError(404, 'No secret stored for this key and user.', key=key, user=user)
     out = {'key': key, 'user': user}
     out.update(_codes(it['secret'], int(it.get('digits', 6)), int(it.get('period', 30)),
-                      it.get('algorithm', 'sha1')))
+                      it.get('algorithm', 'sha1'), at))
     return respond(200, out)
 
 

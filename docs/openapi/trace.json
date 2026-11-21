@@ -1,0 +1,344 @@
+{
+ "tag": {
+  "name": "trace",
+  "description": "The AWS X-Ray trace of a request to this API, cleaned for the public (no sign-in): where its time went, as JSON or a page."
+ },
+ "paths": {
+  "/trace/get": {
+   "get": {
+    "tags": [
+     "trace"
+    ],
+    "operationId": "traceGet",
+    "summary": "One trace of this deployment (JSON or a page)",
+    "description": "The X-Ray trace with this id, as long as it is from this deployment: every API request in it, the function behind each with its initialisation (cold start), handler and overhead times, faults, and a few plain sentences about where the time went. health/get and health/check return their trace's URL (traceUrl is the page, traceDataUrl this JSON). A trace is written as its request finishes and takes a few seconds to arrive: until then the answer is 200 with pending: true (the page refreshes itself), or pass wait to hold the request open. Shown is an allow-list - paths (never hosts or query strings), methods, statuses, function and API names, timings - never account ids, ARNs, request ids or caller IPs. Traces are kept 30 days.",
+    "parameters": [
+     {
+      "name": "ref",
+      "in": "query",
+      "required": true,
+      "schema": {
+       "type": "string"
+      },
+      "description": "X-Ray trace id: 1-<8 hex>-<24 hex> (the traceId of a health response).",
+      "example": "1-673d9a1b-5f2a8c3e9d1b4a6f7e8c9d0a"
+     },
+     {
+      "name": "format",
+      "in": "query",
+      "required": false,
+      "schema": {
+       "type": "string",
+       "enum": [
+        "json",
+        "html"
+       ],
+       "default": "json"
+      },
+      "description": "json (default) or html: a page showing the requests, what stands out and a waterfall of every step."
+     },
+     {
+      "name": "wait",
+      "in": "query",
+      "required": false,
+      "schema": {
+       "type": "integer",
+       "default": 0,
+       "minimum": 0,
+       "maximum": 20
+      },
+      "description": "Seconds to hold the request open while X-Ray is still receiving the trace."
+     }
+    ],
+    "responses": {
+     "200": {
+      "description": "The trace, or pending: true while X-Ray is still receiving it",
+      "content": {
+       "application/json": {
+        "schema": {
+         "type": "object",
+         "required": [
+          "traceId",
+          "pending"
+         ],
+         "properties": {
+          "traceId": {
+           "type": "string"
+          },
+          "pending": {
+           "type": "boolean",
+           "description": "true: X-Ray is still receiving the trace; ask again (retryAfterSeconds)"
+          },
+          "startedTime": {
+           "type": "integer"
+          },
+          "durationMs": {
+           "type": "number"
+          },
+          "ageSeconds": {
+           "type": "integer"
+          },
+          "settled": {
+           "type": "boolean",
+           "description": "false while segments may still be arriving (the trace is under 30 s old)"
+          },
+          "requestCount": {
+           "type": "integer"
+          },
+          "spanCount": {
+           "type": "integer"
+          },
+          "requests": {
+           "type": "array",
+           "items": {
+            "type": "object",
+            "required": [
+             "index",
+             "span",
+             "startMs",
+             "coldStart"
+            ],
+            "properties": {
+             "index": {
+              "type": "integer"
+             },
+             "span": {
+              "type": "integer"
+             },
+             "method": {
+              "type": "string",
+              "nullable": true
+             },
+             "path": {
+              "type": "string",
+              "nullable": true
+             },
+             "status": {
+              "type": "integer",
+              "nullable": true
+             },
+             "startMs": {
+              "type": "number"
+             },
+             "durationMs": {
+              "type": "number",
+              "nullable": true
+             },
+             "function": {
+              "type": "string"
+             },
+             "functionMs": {
+              "type": "number",
+              "nullable": true
+             },
+             "initMs": {
+              "type": "number",
+              "nullable": true
+             },
+             "invocationMs": {
+              "type": "number",
+              "nullable": true
+             },
+             "overheadMs": {
+              "type": "number",
+              "nullable": true
+             },
+             "coldStart": {
+              "type": "boolean"
+             },
+             "failed": {
+              "type": "boolean"
+             }
+            },
+            "additionalProperties": false
+           },
+           "description": "one row per API request in the trace"
+          },
+          "clues": {
+           "type": "array",
+           "items": {
+            "type": "string"
+           },
+           "description": "plain sentences about where the time went"
+          },
+          "spans": {
+           "type": "array",
+           "items": {
+            "type": "object",
+            "required": [
+             "index",
+             "depth",
+             "name",
+             "kind",
+             "startMs"
+            ],
+            "properties": {
+             "index": {
+              "type": "integer"
+             },
+             "parent": {
+              "type": "integer",
+              "nullable": true,
+              "description": "index of the parent span; null for a root"
+             },
+             "depth": {
+              "type": "integer"
+             },
+             "name": {
+              "type": "string",
+              "description": "API name/stage, function name, or a phase (Initialization, Invocation, Overhead)"
+             },
+             "kind": {
+              "type": "string",
+              "enum": [
+               "api",
+               "lambda",
+               "function",
+               "init",
+               "invocation",
+               "overhead",
+               "subsegment",
+               "segment"
+              ]
+             },
+             "operation": {
+              "type": "string"
+             },
+             "startMs": {
+              "type": "number",
+              "description": "from the start of the trace"
+             },
+             "durationMs": {
+              "type": "number",
+              "nullable": true
+             },
+             "method": {
+              "type": "string"
+             },
+             "path": {
+              "type": "string",
+              "nullable": true,
+              "description": "path only - never the host or query string"
+             },
+             "status": {
+              "type": "integer"
+             },
+             "error": {
+              "type": "boolean"
+             },
+             "fault": {
+              "type": "boolean"
+             },
+             "throttle": {
+              "type": "boolean"
+             },
+             "inProgress": {
+              "type": "boolean"
+             }
+            },
+            "additionalProperties": false
+           },
+           "description": "every segment and subsegment, depth-first in start order"
+          },
+          "links": {
+           "type": "object",
+           "properties": {
+            "page": {
+             "type": "string",
+             "format": "uri"
+            },
+            "data": {
+             "type": "string",
+             "format": "uri"
+            }
+           }
+          },
+          "waitedMs": {
+           "type": "integer"
+          },
+          "retryAfterSeconds": {
+           "type": "integer"
+          },
+          "comment": {
+           "type": "string"
+          }
+         },
+         "example": {
+          "traceId": "1-673d9a1b-5f2a8c3e9d1b4a6f7e8c9d0a",
+          "startedTime": 1795680001,
+          "durationMs": 6140.2,
+          "ageSeconds": 42,
+          "settled": true,
+          "pending": false,
+          "requestCount": 2,
+          "spanCount": 8,
+          "requests": [
+           {
+            "index": 1,
+            "span": 0,
+            "method": "GET",
+            "path": "/v1/health/check",
+            "status": 200,
+            "startMs": 0,
+            "durationMs": 6140.2,
+            "function": "testhelper-v1-HealthFunction-AbC123",
+            "functionMs": 6120.0,
+            "invocationMs": 6118.4,
+            "coldStart": false
+           }
+          ],
+          "clues": [
+           "Slowest request: GET /v1/health/check, 6140 ms."
+          ],
+          "spans": [
+           {
+            "index": 0,
+            "parent": null,
+            "depth": 0,
+            "name": "testhelper-v1-v1/live",
+            "kind": "api",
+            "startMs": 0,
+            "durationMs": 6140.2,
+            "method": "GET",
+            "path": "/v1/health/check",
+            "status": 200
+           }
+          ],
+          "links": {
+           "page": "{BASE_URL}/trace/get?ref=1-673d9a1b-5f2a8c3e9d1b4a6f7e8c9d0a&format=html",
+           "data": "{BASE_URL}/trace/get?ref=1-673d9a1b-5f2a8c3e9d1b4a6f7e8c9d0a"
+          },
+          "waitedMs": 0
+         }
+        }
+       },
+       "text/html": {
+        "schema": {
+         "type": "string"
+        }
+       }
+      }
+     },
+     "400": {
+      "$ref": "#/components/responses/Error"
+     },
+     "404": {
+      "description": "No such trace from this deployment (older than 30 days, not traced, or another application's)",
+      "content": {
+       "application/json": {
+        "schema": {
+         "$ref": "#/components/schemas/Error"
+        }
+       },
+       "text/html": {
+        "schema": {
+         "type": "string"
+        }
+       }
+      }
+     }
+    }
+   }
+  }
+ }
+}

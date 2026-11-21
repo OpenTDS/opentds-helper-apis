@@ -56,7 +56,8 @@ REAL_RETENTION_DAYS = 7
 MOCK_RETENTION_DAYS = 1
 MAX_WINDOW_S = 86400
 DEFAULT_WINDOW_S = 300
-MAX_RESULTS = 500
+MAX_RESULTS = 5000
+MAX_LIST_BYTES = 5_000_000      # Lambda proxy responses cap at 6 MB; stop well short
 MAX_MESSAGE = 4000
 MAX_SEND_CHARS = 480            # ~3 concatenated SMS segments; each one is billed
 CODE_LEN = 6
@@ -384,6 +385,14 @@ def do_list(req):
     rows.sort(key=lambda x: x['seq'] or '', reverse=True)
     if len(rows) > MAX_RESULTS:
         rows, truncated = rows[:MAX_RESULTS], True
+    size, kept = 0, 0
+    for r in rows:
+        size += len(json.dumps(r, default=str)) + 2
+        if size > MAX_LIST_BYTES:
+            break
+        kept += 1
+    if kept < len(rows):
+        rows, truncated = rows[:kept], True
     out = {'seconds': window, 'sinceTime': now - window, 'untilTime': now,
            'count': len(rows), 'numbers': sorted({r['number'] for r in rows if r['number']}),
            'messages': rows}
@@ -391,6 +400,9 @@ def do_list(req):
         out['number'] = number
     if truncated:
         out['truncated'] = True
+        out['comment'] = ('more messages matched than one response holds (max %d, or about 5 MB); '
+                          'these are the newest - narrow seconds= or add number= for the rest'
+                          % MAX_RESULTS)
     return respond(200, out)
 
 

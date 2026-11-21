@@ -12,7 +12,25 @@ data "archive_file" "src" {
   )
 }
 
+# The build stamp: every function carries the same BUILD_ID, BUILD_COMMIT and
+# DEPLOYED_TIME (X-Build header, health/get; health/check flags a function on
+# another build). Unless var.build_id is given, the build is the time the code
+# package last changed - time_static is re-created only when the zip changes.
+resource "time_static" "build" {
+  triggers = {
+    src = data.archive_file.src.output_base64sha256
+  }
+}
+
 locals {
+  build_id      = var.build_id != "" ? var.build_id : formatdate("YYYYMMDD.hhmm", time_static.build.rfc3339)
+  deployed_time = var.deployed_time != 0 ? var.deployed_time : time_static.build.unix
+  build_env = {
+    BUILD_ID      = local.build_id
+    BUILD_COMMIT  = var.build_commit
+    DEPLOYED_TIME = tostring(local.deployed_time)
+  }
+
   mail_env = {
     BASE_URL          = local.base_url
     MAIL_TABLE        = aws_dynamodb_table.this["mail"].name
@@ -91,8 +109,16 @@ locals {
         PERF_TABLE = aws_dynamodb_table.this["perf"].name
       }
     }
+    recon = {
+      runtime = var.python_runtime, handler = "recon.handler", role = "recon", memory = 512, timeout = 29
+      env = {
+        BASE_URL    = local.base_url
+        RECON_TABLE = aws_dynamodb_table.recon.name
+        PERF_TABLE  = aws_dynamodb_table.this["perf"].name
+      }
+    }
     sms = {
-      runtime = var.python_runtime, handler = "sms.handler", role = "sms", memory = 128, timeout = 29
+      runtime = var.python_runtime, handler = "sms.handler", role = "sms", memory = 512, timeout = 29
       env = {
         BASE_URL            = local.base_url
         SMS_TABLE           = aws_dynamodb_table.sms.name
@@ -102,17 +128,20 @@ locals {
         SMS_SEND_INTERVAL   = tostring(var.sms_send_interval_seconds)
       }
     }
-    # Speech comes from Polly in var.voice_region; the audio is stored in this region.
+    # Speech comes from Polly in var.voice_region; the audio is stored in this region,
+    # and transcribed (voice/listen) in this region, where the bucket is.
     voice = {
       runtime = var.python_runtime, handler = "voice.handler", role = "voice", memory = 512, timeout = 29
       env = {
-        BASE_URL               = local.base_url
-        VOICE_BUCKET           = aws_s3_bucket.this["voice"].id
-        VOICE_TABLE            = aws_dynamodb_table.this["voice"].name
-        VOICE_REGION           = var.voice_region
-        VOICE_NAME             = var.voice_name
-        VOICE_ENGINE           = var.voice_engine
-        VOICE_DAILY_CHARACTERS = tostring(var.voice_daily_characters)
+        BASE_URL                   = local.base_url
+        VOICE_BUCKET               = aws_s3_bucket.this["voice"].id
+        VOICE_TABLE                = aws_dynamodb_table.this["voice"].name
+        VOICE_REGION               = var.voice_region
+        VOICE_NAME                 = var.voice_name
+        VOICE_ENGINE               = var.voice_engine
+        VOICE_DAILY_CHARACTERS     = tostring(var.voice_daily_characters)
+        VOICE_LANGUAGE             = var.voice_language
+        VOICE_DAILY_LISTEN_SECONDS = tostring(var.voice_daily_listen_seconds)
       }
     }
     names = {
@@ -130,6 +159,25 @@ locals {
         MAIL_DOMAIN = var.domain
       }
     }
+    # The public view of an X-Ray trace of this deployment (health returns its URL).
+    trace = {
+      runtime = var.python_runtime, handler = "trace_view.handler", role = "trace", memory = 256, timeout = 29
+      env = {
+        BASE_URL     = local.base_url
+        TRACE_PREFIX = "${var.name_prefix}-"
+      }
+    }
+    # Probes every service through the public API (deadline 20 s, under API
+    # Gateway's 29). HEALTH_FUNCTIONS lists the functions whose build it checks.
+    health = {
+      runtime = var.python_runtime, handler = "health.handler", role = "health", memory = 256, timeout = 29
+      env = {
+        BASE_URL         = local.base_url
+        MAIL_DOMAIN      = var.domain
+        HEALTH_TABLE     = aws_dynamodb_table.health.name
+        HEALTH_FUNCTIONS = join(",", [for k, n in local.fn_name : "${k}=${n}" if k != "health"])
+      }
+    }
   }
 }
 
@@ -145,7 +193,11 @@ resource "aws_lambda_function" "this" {
   source_code_hash = data.archive_file.src.output_base64sha256
 
   environment {
-    variables = local.functions[each.key].env
+    variables = merge(local.build_env, local.functions[each.key].env)
+  }
+
+  tracing_config {
+    mode = var.tracing ? "Active" : "PassThrough"
   }
 
   depends_on = [aws_iam_role_policy_attachment.logs]
@@ -180,6 +232,9 @@ locals {
     totp       = "v1"
     qr         = "v1"
     perf       = "v1"
+    recon      = "v1"
+    health     = "v1"
+    trace      = "v1"
   }
 }
 

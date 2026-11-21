@@ -35,10 +35,12 @@ domain     = "example.com"
 # sms_region                = "ap-southeast-2"
 # sms_send_interval_seconds = 10
 
-# ---- Voice (voice/say speaks through Amazon Polly)
+# ---- Voice (voice/say speaks through Amazon Polly; voice/listen hears through Amazon Transcribe)
 # voice_region           = "ap-southeast-2"  # must offer the engine: us-west-1 has neither neural nor generative
 # voice_name             = "Olivia"
 # voice_engine           = "neural"          # standard | neural | generative
 # voice_daily_characters = 25000             # new synthesis per UTC day; 0 = off (stored audio still served)
+# voice_language             = "en-AU"      # what voice/listen expects to hear; "auto" identifies it per recording
+# voice_daily_listen_seconds = 1800         # seconds of new audio transcribed per UTC day; 0 = off
 
 # tags = { Application = "testhelper-v1", Owner = "qa-team" }

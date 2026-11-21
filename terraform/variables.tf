@@ -255,6 +255,59 @@ variable "voice_daily_characters" {
   }
 }
 
+variable "voice_language" {
+  description = "The language voice/listen expects to hear when the caller names none: an Amazon Transcribe language code such as en-AU, or auto to have each recording's language identified."
+  type        = string
+  default     = "en-AU"
+
+  validation {
+    condition     = can(regex("^([a-z]{2,3}-[A-Z]{2}|auto)$", var.voice_language))
+    error_message = "voice_language is a language code such as en-AU, or auto."
+  }
+}
+
+variable "voice_daily_listen_seconds" {
+  description = "Seconds of audio voice/listen may send to Amazon Transcribe per UTC day. Transcription is billed by the second and the endpoint is open, so new listening is capped; audio already transcribed is always served. 0 switches listening off."
+  type        = number
+  default     = 1800
+
+  validation {
+    condition     = var.voice_daily_listen_seconds >= 0
+    error_message = "voice_daily_listen_seconds cannot be negative."
+  }
+}
+
+# ------------------------------------------------------------------ tracing
+variable "tracing" {
+  description = "AWS X-Ray tracing of the v1 API stage and every function. Billed per trace recorded (the default sampling rule keeps 1 request a second plus 5% of the rest; health calls are always kept); no standing cost. health/get and health/check return the URL of their trace."
+  type        = bool
+  default     = true
+}
+
+# ------------------------------------------------------------------ build stamp
+variable "build_id" {
+  description = "Build identifier stamped on every function (X-Build header, health/get). Empty (the default): the UTC time the code last changed, as yyyymmdd.hhmm - it changes when ../src changes, not on every apply."
+  type        = string
+  default     = ""
+
+  validation {
+    condition     = can(regex("^[A-Za-z0-9._+-]{0,64}$", var.build_id))
+    error_message = "build_id: up to 64 letters, digits and . _ + -."
+  }
+}
+
+variable "build_commit" {
+  description = "Source commit of this build, e.g. -var build_commit=$(git rev-parse --short HEAD). May be empty."
+  type        = string
+  default     = ""
+}
+
+variable "deployed_time" {
+  description = "When this build was deployed, UTC epoch seconds. 0 (the default): the time the code last changed, recorded with build_id."
+  type        = number
+  default     = 0
+}
+
 # ------------------------------------------------------------------ runtimes
 variable "python_runtime" {
   description = "Lambda runtime for the Python services."

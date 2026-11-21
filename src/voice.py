@@ -8,6 +8,8 @@
   /v1/voice/save?key=KEY&ref=REF                           pin an utterance (POST a body: a recording)
   /v1/voice/delete?key=KEY
   /v1/voice/voices     /v1/voice/tags
+  POST /v1/voice/listen                                    audio -> the words in it (voice_listen)
+  /v1/voice/find?ref=REF&text=...   /v1/voice/compare?ref=REF&text=...
 
 Every say request is reduced to a canonical form and hashed; the hash is the
 ref and the audio is stored under it. The same request is therefore the same
@@ -16,8 +18,9 @@ store, never from asking the engine again (a generative voice need not say
 the same thing the same way twice, and is upgraded under you).
 
 The modules: voice_script (tags -> script -> SSML, and the honest report),
-voice_audio (WAV, durations), voice_store (S3, Polly, the spend guard),
-voice_page (the play=true page).
+voice_audio (WAV, durations), voice_store (S3, Polly, the spend guards),
+voice_page (the play=true page), voice_listen and voice_words (hearing: audio
+-> transcript, and finding and comparing what was said).
 """
 import base64
 import hashlib
@@ -30,6 +33,7 @@ from botocore.exceptions import ClientError
 
 from common import FALSE, KEY_RE, KEY_RULE, TRUE, ApiError, b64decode, base_url, raw, respond, run
 import voice_audio as va
+import voice_listen
 import voice_page
 import voice_script as vs
 import voice_store as store
@@ -108,8 +112,8 @@ def _one_of_key_ref(inp):
     if key and ref:
         raise ApiError(400, "Pass 'key' (saved audio) or 'ref' (a generated utterance), not both.")
     if not key and not ref:
-        raise ApiError(400, "Identify the audio with 'ref' (from voice/say) or 'key' (saved "
-                            "with voice/save).")
+        raise ApiError(400, "Identify the audio with 'ref' (from voice/say or voice/listen) or "
+                            "'key' (saved with voice/save).")
     if key and not KEY_RE.match(key):
         raise ApiError(400, f"'key' must be {KEY_RULE}.", received=key)
     if ref:
@@ -130,6 +134,10 @@ def _source(inp):
                             "voice, language, engine, format, hz. Its words and direction are "
                             "already stored.", received=clash)
     key, ref = _one_of_key_ref(inp)
+    if ref and store.is_heard(ref):
+        raise ApiError(400, 'That ref is audio that was heard (voice/listen), not an utterance: '
+                            'there is no script to say again. voice/get plays it as it is.',
+                       ref=ref)
     if ref:
         meta, _m = store.load(store.GENERATED_META + ref + '.json')
         if meta is None:
@@ -139,8 +147,8 @@ def _source(inp):
     if meta is None:
         raise store.key_not_found(key)
     if 'script' not in meta:
-        raise ApiError(400, 'That key holds an uploaded recording, not a generated utterance: '
-                            'there are no words to say again.', key=key)
+        raise ApiError(400, 'That key holds a recording, not a generated utterance: there is '
+                            'no script to say again.', key=key)
     return meta
 
 
@@ -309,7 +317,13 @@ def _deliver(how, out, s3key, meta):
         out['url'] = store.presigned(s3key, filename, ctype)
         out['expiresInSeconds'] = store.PRESIGN_TTL
         return respond(200, out)
-    out['data'] = base64.b64encode(store.read(s3key)).decode('ascii')
+    try:
+        out['data'] = base64.b64encode(store.read(s3key)).decode('ascii')
+    except ClientError as e:
+        if e.response.get('Error', {}).get('Code') not in ('NoSuchKey', '404', 'NotFound'):
+            raise
+        raise ApiError(404, 'That audio is no longer stored.',
+                       **{k: out[k] for k in ('ref', 'key') if k in out})
     return respond(200, out)
 
 
@@ -360,6 +374,13 @@ def say(req):
 def get(req):
     key, ref = _one_of_key_ref(req.qs)
     how = _delivery(req.qs)
+    if ref and store.is_heard(ref):
+        # Audio given to voice/listen, as it was handed to the transcriber
+        # (raw samples come back as a WAV, so they can be played).
+        meta, _m = store.load(store.HEARD_META + ref + '.json')
+        if meta is None:
+            raise store.ref_not_found(ref)
+        return _deliver(how, _public(meta, ref=ref, source='heard'), meta['audioKey'], meta)
     if ref:
         meta, modified = store.load(store.GENERATED_META + ref + '.json')
         if meta is None:
@@ -412,6 +433,22 @@ def _body_bytes(req):
 def save(req):
     key = req.key('key')
     ref = req.text('ref')
+    if ref and store.is_heard(store.check_ref(ref)):
+        # Keep what was heard: the audio, and the words if there are any yet.
+        meta, _m = store.load(store.HEARD_META + ref + '.json')
+        if meta is None:
+            raise store.ref_not_found(ref)
+        saved = {k: meta[k] for k in ('ref', 'text', 'language', 'format', 'hz', 'channels',
+                                      'bytes', 'durationMs', 'contentType')
+                 if meta.get(k) is not None}
+        saved.update(key=key, savedFrom='heard', savedTime=store.now(),
+                     filename=_named(key, meta['format']))
+        store.copy(meta['audioKey'], store.SAVED_AUDIO + key, meta['contentType'],
+                   saved['filename'])
+        store.put_json(store.SAVED_META + key + '.json', saved)
+        out = _public(saved, key=key, saved=True, source='heard', ref=ref)
+        out['getUrl'] = _get_url(req, key=key)
+        return respond(200, out)
     if ref:
         # Pin: copy a generated utterance into the saved store, S3 to S3.
         store.check_ref(ref)
@@ -429,8 +466,8 @@ def save(req):
         return respond(200, out)
 
     if req.method != 'POST':
-        raise ApiError(400, "Pass 'ref' to save a generated utterance, or POST a recording as "
-                            "the request body (raw bytes with Content-Type: "
+        raise ApiError(400, "Pass 'ref' to save an utterance (or audio that was heard), or POST "
+                            "a recording as the request body (raw bytes with Content-Type: "
                             "application/octet-stream, or base64 text).")
     data, body_format = _body_bytes(req)
     if len(data) > MAX_SAVED_KB * 1024:
@@ -513,12 +550,15 @@ def tags(req):
     })
 
 
-ROUTES = {'say': say, 'get': get, 'save': save, 'delete': delete, 'voices': voices, 'tags': tags}
+ROUTES = {'say': say, 'get': get, 'save': save, 'delete': delete, 'voices': voices, 'tags': tags,
+          'listen': voice_listen.listen, 'find': voice_listen.find,
+          'compare': voice_listen.compare}
 
 INDEX = {
-    'description': 'Spoken utterances for testing voice interfaces: text (with [tags] for '
-                   'emotion, pace and pauses) to audio, stored by content so every request '
-                   'can be replayed byte for byte.',
+    'description': 'Both halves of a spoken conversation, for testing voice interfaces. say: '
+                   'text (with [tags] for emotion, pace and pauses) to audio, stored by content '
+                   'so every request can be replayed byte for byte. listen: audio to the words '
+                   'in it, with find and compare to assert on what was said.',
 }
 
 

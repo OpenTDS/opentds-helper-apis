@@ -42,6 +42,9 @@ locals {
     totp    = "totp"
     qr      = "qr"
     perf    = "perf"
+    recon   = "recon"
+    health  = "health"
+    trace   = "trace"
   }
   mail_inbox_actions = ["pop", "reset", "clear"]
 }
@@ -166,9 +169,28 @@ resource "aws_api_gateway_deployment" "this" {
 }
 
 resource "aws_api_gateway_stage" "v1" {
-  rest_api_id   = aws_api_gateway_rest_api.v1.id
-  deployment_id = aws_api_gateway_deployment.this["v1"].id
-  stage_name    = "live"
+  rest_api_id          = aws_api_gateway_rest_api.v1.id
+  deployment_id        = aws_api_gateway_deployment.this["v1"].id
+  stage_name           = "live"
+  xray_tracing_enabled = var.tracing
+}
+
+# Health calls are always traced, so health/get and health/check can hand back
+# a trace URL that will exist. Every other request follows the default rule.
+resource "aws_xray_sampling_rule" "health" {
+  count          = var.tracing ? 1 : 0
+  rule_name      = "${var.name_prefix}-health"
+  priority       = 100
+  fixed_rate     = 1
+  reservoir_size = 1
+  service_name   = "*"
+  service_type   = "*"
+  host           = "*"
+  http_method    = "*"
+  # API Gateway may see /health/check or /v1/health/check behind the custom domain.
+  url_path     = "*/health/*"
+  resource_arn = "*"
+  version      = 1
 }
 
 resource "aws_api_gateway_stage" "root" {

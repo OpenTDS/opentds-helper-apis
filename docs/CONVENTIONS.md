@@ -12,7 +12,8 @@ https://api.<domain>/v1/<service>/<resource>/<action>
 
 * Everything is lower case. Path segments are single words — no hyphens,
   underscores or camelCase.
-* Services: `lists`, `names`, `lock`, `mail`, `sms`, `webhook`, `totp`, `qr`, `perf`, `voice`.
+* Services: `lists`, `names`, `lock`, `mail`, `sms`, `webhook`, `totp`, `qr`, `perf`, `recon`,
+  `voice`, `health`, `trace`.
 * `GET /v1` returns an index of services; `GET /v1/<service>` returns that
   service's actions. An unknown action is a 404 whose body lists the valid ones.
 * The version lives in the path. A future v2 is a separate API with its own
@@ -23,9 +24,11 @@ https://api.<domain>/v1/<service>/<resource>/<action>
 * **Every endpoint answers GET.** An LLM can call the whole API with nothing
   but URLs.
 * Endpoints that take a request body (`lists/import`, `mail/send`,
-  `mail/attachments/save`, `voice/say`, `voice/save`) also accept POST; the
-  query-string parameters are the same. (`voice/say` also takes them as fields
-  of a JSON body, where it adds `segments` and `pronounce`.)
+  `mail/attachments/save`, `recon/expect`, `recon/confirm`, `voice/say`,
+  `voice/save`, `voice/listen`, `voice/find`, `voice/compare`) also accept POST; the query-string parameters
+  are the same. (`voice/say` also takes them as fields of a JSON body, where it
+  adds `segments` and `pronounce`; the listening endpoints take the audio as the
+  body, or as `audio` / `chunks` in a JSON body beside the parameters.)
 * `webhook/receive` accepts any method, because it is the target a system
   under test calls.
 * Other endpoints ignore the method, so a POST with query parameters behaves
@@ -55,14 +58,14 @@ https://api.<domain>/v1/<service>/<resource>/<action>
 | `address` | An email address (the mail catcher's namespace). Case-insensitive. |
 | `name` | A named item within a key (a variable, a counter). |
 | `user` | A user within a key (TOTP). |
-| `ref` | A handle the API issued and you pass back: an import, a received attachment, a lock, a generated utterance. |
-| `value` | The value being stored. |
-| `text` / `text64` | Literal text (QR payload, search term, words to speak). |
-| `wait` | Seconds to hold the request open for something to happen, 0–20 (import: 0–25). 0 = return immediately. |
+| `ref` | A handle the API issued and you pass back: an import, a received attachment, a lock, a generated utterance (`v...`), a listening (`h...`), a trace (`1-...`). Where two kinds of ref share an endpoint the first letter says which. |
+| `value` | The value being stored (`recon`: the value being reconciled, matched on both sides). |
+| `text` / `text64` | Literal text (QR payload, search term, words to speak, words expected to be heard). |
+| `wait` | Seconds to hold the request open for something to happen, 0–20 (import: 0–25). 0 = return immediately. Opt-in (default 0) wherever there is a useful answer without waiting; the default is 20 on `voice/listen`, `voice/find` and `voice/compare`, which have nothing to say until the audio is transcribed. Out of time is a 200 with `pending: true`, never an error. |
 | `since` / `until` | Time window, UTC epoch seconds. |
 | `limit` | Maximum items to return. |
 | `start` | First index to return (1-based). |
-| `format` | Output or input format (`json`, `csv`, `svg`, `html`; for `voice`, the audio: `mp3`, `wav`, ...). |
+| `format` | Output or input format (`json`, `csv`, `svg`, `html`; for `voice`, the audio: `mp3`, `wav`, `pcm`, ...). |
 | `seed` | Makes a random result repeatable. |
 | `url` / `view` / `download` | On an action that returns a file (`mail/attachments/get`, `voice/say`, `voice/get`): a presigned URL instead of inline base64, or a 302 to the file itself (shown / saved by a browser). `voice` adds `play`: an HTML page that plays the audio from script, with no player. |
 
@@ -74,20 +77,25 @@ The same verb means the same thing in every service.
 |---|---|
 | `push` | Append an item to the end of a queue. |
 | `pop` | Take the next item and advance the pointer (consuming). |
+| `cyclepop` | Hand out the next item and move it to the back, so items come round again instead of running out (`lists/cyclepop`; `recon/cyclepop`: the short group handed out least recently). Not consuming. |
 | `random` | Return a random item without consuming it. |
 | `get` | Read one thing. No side effects. |
 | `set` | Create or overwrite a named value. |
 | `add` | Add to an accumulator (counter increment, performance data point). |
+| `expect` / `confirm` | Record the two sides of a reconciliation: a record a test submitted / a record it saw processed (`recon`; matched by count per key). |
 | `list` | Read many things, with totals. |
 | `reset` | Rewind a pointer. Data is kept. |
-| `clear` | Delete every item of that collection under the namespace (`lists/clear` records, `mail/clear` messages, `webhook/clear` events, `perf/clear` results). |
+| `clear` | Delete every item of that collection under the namespace (`lists/clear` records, `mail/clear` messages, `webhook/clear` events, `perf/clear` results, `recon/clear` groups). |
 | `delete` | Delete one item. |
 | `acquire` / `release` | Take / give back a lock. |
 | `send` / `receive` | Outbound / inbound message. |
 | `save` | Store a file. |
 | `say` | Turn text into spoken audio. The same request always returns the same stored audio. |
-| `find` | Search inside stored content. |
+| `listen` | Turn audio into the words spoken in it. The same audio is transcribed once. |
+| `find` | Search inside stored content: a file's text, or the words heard in audio. Same three modes everywhere: `text`, `regex`, `left` (+ `right`). |
+| `compare` | How alike two stored things are (`same`, plus a measure). |
 | `import` / `status` | Bulk load, and its progress. |
+| `check` | Run a self-test and report it (`health/check`). |
 | `upload` | Browser page for humans (HTML). `upload/url` returns a presigned S3 POST. |
 
 Read-only nouns (`codes`, `regions`, `stats`, `series`, `keys`, `export`,
@@ -107,17 +115,28 @@ Read-only nouns (`codes`, `regions`, `stats`, `series`, `keys`, `export`,
   `exhausted: true` and a null item, so load-test tools do not count it as a
   failed request.
 * A named thing that does not exist (`vars/get`, `totp/get`,
-  `mail/attachments/get`) is a 404.
+  `mail/attachments/get`, `recon/get` with `value=`) is a 404.
 * A password-protected PDF opened without the right `password` is a 422
   (`passwordRequired` / `passwordIncorrect`).
 * Contention is not an error: `lock/acquire` returns 200 with
   `locked: false`.
 * A request that asked to be refused rather than degraded is a 4xx:
-  `perf/assert` with `strict=true` is a 412 when a check fails; `voice/say`
+  `perf/assert` with `strict=true` is a 412 when a check fails, and so is
+  `recon/get` with `strict=true` when the key is not reconciled; `voice/say`
   with `strict=true` is a 422 when a tag would not be heard. Without `strict`
-  both are 200 and the body says what happened (`pass`, `tags[].rendered`).
+  all are 200 and the body says what happened (`pass`, `reconciled`,
+  `tags[].rendered`).
+  The one 5xx is `health/check` with `strict=true`: 503 unless `status` is
+  `ok`, because that is what uptime monitors and load balancers expect.
 * Over a deployment's spend limit is a 429 with a named flag
-  (`voice/say`: `budgetExhausted`); what is already stored still works.
+  (`voice/say`, `voice/listen`: `budgetExhausted`); what is already stored
+  still works.
+* Work that is still going on is not an error: 200 with `pending: true` and
+  the answer fields `null` (`voice/listen`, `voice/find`, `voice/compare`).
+  Work that ended badly is a 422 with `state: "failed"` (an import with no
+  records, audio the transcriber could not use).
+* A search that finds nothing is a 200 (`count: 0`; `voice/find` adds
+  `found: false`), with a `hint`.
 * Errors always have the shape
 
   ```json
@@ -128,6 +147,15 @@ Read-only nouns (`codes`, `regions`, `stats`, `series`, `keys`, `export`,
   exception is an error raised by API Gateway itself before the request reaches
   a service (throttling 429, 504 timeout): `{"error": "...", "gatewayError": "THROTTLED"}`.
 * `Cache-Control: no-store` on everything except discovery documents.
+* Every response carries `X-Build: <build>` — the deployment that produced it
+  (`yyyymmdd.hhmm` UTC deploy time, or `dev`). All functions of a deployment
+  share one build; `health/get` returns it with the contract `version`
+  (`src/version.json`), `commit` and `deployedTime`.
+* `traceId` is an AWS X-Ray trace id; `traceUrl` is its public page
+  (`trace/get?ref=<traceId>&format=html`, no sign-in), `traceDataUrl` the same
+  as JSON and `traceConsoleUrl` the AWS console view. A trace appears a few
+  seconds after the response it belongs to; until then `trace/get` answers 200
+  with `pending: true`.
 
 ## 6. Limits
 
@@ -138,3 +166,8 @@ Read-only nouns (`codes`, `regions`, `stats`, `series`, `keys`, `export`,
   presigned POST.
 * One `voice/say` utterance is at most 3000 characters (the speech engine's
   limit for one call).
+* Anything billed by its length is only passed on when this service has
+  measured the length itself: characters for `voice/say`; for `voice/listen`,
+  seconds counted from uncompressed samples or MP3 frames. A format that only
+  declares its duration (Ogg, FLAC, WebM, M4A, AMR) is refused, because an
+  open endpoint cannot take a stranger's word for what a request will cost.

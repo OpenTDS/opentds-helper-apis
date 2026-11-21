@@ -491,7 +491,7 @@ def test_voices_and_tags_endpoints(aws):
     assert 'worried' in anxious['also'] and anxious['rendered'] == \
         {'standard': 'approximated', 'neural': 'approximated', 'generative': 'inferred'}
     s, i = call('')
-    assert s == 200 and i['actions'] == ['delete', 'get', 'save', 'say', 'tags', 'voices']
+    assert s == 200 and i['actions'] == ['compare', 'delete', 'find', 'get', 'listen', 'save', 'say', 'tags', 'voices']
     s, e = call('sing')
     assert s == 404 and 'say' in e['actions']
 

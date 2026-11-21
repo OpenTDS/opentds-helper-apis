@@ -53,3 +53,8 @@ output "sms_device_key" {
   value       = var.generate_sms_device_key ? random_password.sms_device_key[0].result : null
   sensitive   = true
 }
+
+output "health_url" {
+  description = "End-to-end self-test of this deployment"
+  value       = "${local.base_url}/health/check"
+}

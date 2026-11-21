@@ -29,7 +29,8 @@ def test_landing_page_for_browsers():
     for placeholder in ('{BASE_URL}', '{MAIL_DOMAIN}', '{ROOT_URL}', '{SERVICE_CARDS}'):
         assert placeholder not in page
     assert 'https://api.example.org/v1/llms.txt' in page and 'testthis.now' in page
-    for svc in ('lists', 'names', 'mail', 'sms', 'totp', 'webhook', 'lock', 'qr', 'perf', 'voice'):
+    for svc in ('lists', 'names', 'mail', 'sms', 'totp', 'webhook', 'lock', 'qr', 'perf', 'recon', 'voice',
+                'health', 'trace'):
         assert f'<h3><code>{svc}</code></h3>' in page
     assert 'vars/get' in page and 'attachments/find' in page
     assert '<code>say</code>' in page
@@ -90,7 +91,8 @@ def test_llms_guide():
     body = r['body']
     assert 'https://api.example.org/v1/mail/pop' in body
     assert '{BASE' not in body and '{MAIL_DOMAIN}' not in body and '{ROOT_URL}' not in body
-    for svc in ('lists', 'names', 'mail', 'sms', 'totp', 'webhook', 'lock', 'qr', 'perf', 'voice'):
+    for svc in ('lists', 'names', 'mail', 'sms', 'totp', 'webhook', 'lock', 'qr', 'perf', 'recon', 'voice',
+                'health', 'trace'):
         assert f'`{svc}` —' in body, svc
 
 
@@ -107,7 +109,8 @@ def test_llms_mentions_every_documented_action():
 def test_index_and_catalog():
     b = json.loads(call()['body'])
     names = [s['name'] for s in b['services']]
-    assert names == ['lists', 'names', 'mail', 'sms', 'totp', 'webhook', 'lock', 'qr', 'perf', 'voice']
+    assert names == ['lists', 'names', 'mail', 'sms', 'totp', 'webhook', 'lock', 'qr', 'perf', 'recon', 'voice',
+                     'health', 'trace']
     lists = b['services'][0]
     assert any(a['action'] == 'vars/get' for a in lists['actions'])
     r = call('.well-known/api-catalog')

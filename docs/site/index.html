@@ -4,7 +4,7 @@
 <meta charset="utf-8">
 <meta name="viewport" content="width=device-width, initial-scale=1">
 <title>Test Helper API</title>
-<meta name="description" content="Free helper endpoints for end-to-end and load test automation: test-data queues, an email catcher, TOTP codes, webhook capture, locks, QR codes, performance statistics and spoken utterances for voice interfaces. Every call is a plain HTTPS GET.">
+<meta name="description" content="Free helper endpoints for end-to-end and load test automation: test-data queues, an email catcher, TOTP codes, webhook capture, locks, QR codes, performance statistics, reconciliation of submitted against processed records, and both sides of a spoken conversation with a voice interface. Every call is a plain HTTPS GET.">
 <link rel="alternate" type="text/plain" title="LLM guide" href="{BASE_URL}/llms.txt">
 <link rel="service-desc" type="application/json" href="{BASE_URL}/openapi.json">
 <style>
@@ -463,6 +463,7 @@ footer { border-top: 1px solid var(--line); padding: 26px 0 40px; color: var(--m
     S.first = S.person.femaleFirstName;
     S.code6 = S.codes.rand6;
     S.perfKey = 'demo-' + run + '-login';
+    S.reconKey = 'demo-' + run + '-recon';
     S.lockKey = 'account-' + low;
     S.attKey = 'welcome-' + low + '.txt';
     S.mockNumber = '049157' + String(parseInt(S.codes.rand6.replace(/\D/g, '').slice(0, 4) || '0', 10) + 1000).slice(-4);
@@ -584,7 +585,23 @@ footer { border-top: 1px solid var(--line); padding: 26px 0 40px; color: var(--m
           ['Keys for this run', '', 'perf/keys', function () { return { prefix: 'demo-' + S.run }; }],
           ['Clear', '', 'perf/clear', function () { return { key: S.perfKey }; }]
         ] },
-      { id: 'voice', title: 'voice', blurb: 'Spoken utterances for testing voice interfaces. The same request is always the same stored audio, so a test can be replayed on exactly the sound it failed on. Tags in [square brackets] direct the delivery, and the reply says how faithfully each one was rendered.',
+      { id: 'recon', title: 'recon', blurb: 'Reconcile what a test submitted with what it saw processed. Records are matched by count per key - and with suffix=4 a full id meets a masked one - so you see which keys are short, over, or reconciled only by count, with the candidates behind each.',
+        ex: [
+          ['Expect four participants', 'suffix=4 on the first write: match on the last 4 digits. Two of them share 1262.', 'recon/expect', function () { return { key: S.reconKey, value: '609841262', suffix: 4 }; }],
+          ['Expect another', '', 'recon/expect', function () { return { key: S.reconKey, value: '609921262' }; }],
+          ['Expect a third', '', 'recon/expect', function () { return { key: S.reconKey, value: '609850661' }; }],
+          ['Expect a fourth', '', 'recon/expect', function () { return { key: S.reconKey, value: '609829094' }; }],
+          ['A text arrives: xxxxx1262', 'The masked number matches on 1262. One of two arrived: still short.', 'recon/confirm', function () { return { key: S.reconKey, value: 'xxxxx1262' }; }],
+          ['A text arrives: xxxxx9094', 'Unique on both sides: matched.', 'recon/confirm', function () { return { key: S.reconKey, value: 'xxxxx9094' }; }],
+          ['A text nobody expected', 'It becomes over.', 'recon/confirm', function () { return { key: S.reconKey, value: 'xxxxx5555' }; }],
+          ['The counts', 'In records: outstanding 2 (one 1262, the 0661), unexpected 1, and ambiguousGroups 1.', 'recon/get', function () { return { key: S.reconKey }; }],
+          ['Gate on it', 'strict=true: HTTP 412 unless reconciled.', 'recon/get', function () { return { key: S.reconKey, strict: 'true' }; }],
+          ['Still to reconcile', 'short and over groups, with their candidates: 1262 is short by 1 - one of two ids.', 'recon/list', function () { return { key: S.reconKey, status: 'unreconciled' }; }],
+          ['As a CSV report', '', 'recon/list', function () { return { key: S.reconKey, format: 'csv' }; }],
+          ['Next one to check', 'For a checker script: the short key handed out least recently.', 'recon/cyclepop', function () { return { key: S.reconKey }; }],
+          ['Clear', '', 'recon/clear', function () { return { key: S.reconKey }; }]
+        ] },
+      { id: 'voice', title: 'voice', blurb: 'Both sides of a spoken conversation, for testing voice interfaces. Say: the same request is always the same stored audio, so a test can be replayed on exactly the sound it failed on; tags in [square brackets] direct the delivery, and the reply says how faithfully each one was rendered. Listen: audio becomes words, and find and compare assert on what was said however it was written down.',
         ex: [
           ['Hear it', 'play=true returns a page that plays the audio by itself, with no player on screen. (Opened cold, without a click on this site first, a browser holds the sound back and the page shows one Play button.)', 'voice/say', function () { return { text: 'Hello, this is ' + S.first + '. When is my next appointment?', play: 'true' }; }],
           ['The same words, anxious', 'No AWS voice takes emotion as an instruction yet: this is a faster delivery, and the reply says so.', 'voice/say', function () { return { text: 'Hello, this is ' + S.first + '. When is my next appointment?', emotion: 'anxious', play: 'true' }; }],
@@ -593,7 +610,20 @@ footer { border-top: 1px solid var(--line); padding: 26px 0 40px; color: var(--m
           ['A random voice, repeatable', 'The same seed picks the same voice every time.', 'voice/say', function () { return { text: 'Hello, this is ' + S.first + '.', voice: 'random', seed: S.run, play: 'true' }; }],
           ['The voices', 'With what each engine can render: pauses, pace, volume, whisper, emotion.', 'voice/voices', function () { return { language: 'en' }; }],
           ['The tags', '', 'voice/tags', function () { return null; }]
-        ] },
+        ],
+        ref: { id: 'voiceref', label: 'Utterance ref', hint: 'from ref in a voice/say response',
+          fill: async function () {
+            var r = await getJson(url('voice/say', { text: 'My reference number is 4 8 3 9 2 1. Is the doctor free on Tuesday the twenty-fourth?', url: 'true' }));
+            if (!r.body.ref) throw new Error(r.body.error || 'voice/say did not answer');
+            return r.body.ref;
+          },
+          ex: [
+            ['Listen to it', 'The audio becomes words. A test would POST what the system under test said back; here the utterance itself is heard. The first call takes some seconds (pending: true means ask again); after that it is cached.', 'voice/listen', function (ref) { return { ref: ref }; }],
+            ['Was this said?', 'Matched as words, not spelling: it was said as "the twenty-fourth".', 'voice/find', function (ref) { return { ref: ref, text: 'Tuesday the 24th' }; }],
+            ['Capture what followed', 'Left and right markers, as for mail attachments. The number is in values[0].', 'voice/find', function (ref) { return { ref: ref, left: 'reference number is' }; }],
+            ['Is it understood as written?', 'A round trip: what was heard, compared with the words it was made from - similarity, word error rate, and each difference.', 'voice/compare', function (ref) { return { ref: ref }; }],
+            ['Hear it again', 'The stored audio, played by the page.', 'voice/get', function (ref) { return { ref: ref, play: 'true' }; }]
+          ] } },
       { id: 'discovery', title: 'discovery', blurb: 'What an AI assistant reads to learn the API.',
         ex: [
           ['Service index', '', '', function () { return null; }],

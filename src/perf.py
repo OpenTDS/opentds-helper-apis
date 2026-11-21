@@ -339,26 +339,11 @@ def _fold(pkv, sk, v, ok, now, ttl):
     return got
 
 
-def do_add(req):
-    reject_renamed(req)
-    key = req.key()
-    raw_v = req.text('value')
-    if raw_v is None:
-        raise ApiError(400, "Missing required query parameter 'value'.",
-                       hint='value=248.5, or value=248.5,301,199 for several points')
-    parts = [p for p in raw_v.split(',') if p.strip() != '']
-    if len(parts) > MAX_BATCH_VALUES:
-        raise ApiError(400, 'Too many values in one call.',
-                       maximum=MAX_BATCH_VALUES, received=len(parts))
-    values = [parse_value(p) for p in parts]
-    if not values:
-        raise ApiError(400, "Missing required query parameter 'value'.")
-
-    ok = req.boolean('ok', True)
-    keep_raw = req.boolean('raw', False)
-
+def record(key, values, ok=True, given=None, keep_raw=False):
+    """Fold Decimal values into key's accumulators; returns the point time used.
+    Shared by perf/add and by other services that feed a perf key in-process
+    (recon's perfkey= records processing lag here)."""
     wall = int(time.time())
-    given = epoch(req, 'time')
     now = wall if given is None else given
     minute = now - (now % BUCKET_SECONDS)
     # Retention runs from when the point was WRITTEN, so a backfilled run
@@ -400,6 +385,27 @@ def do_add(req):
         except ClientError:
             pass    # the registry is a convenience index; never fail a write for it
 
+    return now
+
+
+def do_add(req):
+    reject_renamed(req)
+    key = req.key()
+    raw_v = req.text('value')
+    if raw_v is None:
+        raise ApiError(400, "Missing required query parameter 'value'.",
+                       hint='value=248.5, or value=248.5,301,199 for several points')
+    parts = [p for p in raw_v.split(',') if p.strip() != '']
+    if len(parts) > MAX_BATCH_VALUES:
+        raise ApiError(400, 'Too many values in one call.',
+                       maximum=MAX_BATCH_VALUES, received=len(parts))
+    values = [parse_value(p) for p in parts]
+    if not values:
+        raise ApiError(400, "Missing required query parameter 'value'.")
+
+    ok = req.boolean('ok', True)
+    keep_raw = req.boolean('raw', False)
+    now = record(key, values, ok, epoch(req, 'time'), keep_raw)
     return respond(200, {'key': key, 'recorded': len(values), 'time': now,
                          'ok': ok, 'raw': keep_raw})
 

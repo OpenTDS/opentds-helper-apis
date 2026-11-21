@@ -1,0 +1,710 @@
+{
+ "tag": {
+  "name": "health",
+  "description": "Which build is deployed, and an end-to-end self-test of the deployment: a real request with a known answer to every service, through the public API."
+ },
+ "paths": {
+  "/health/get": {
+   "get": {
+    "tags": [
+     "health"
+    ],
+    "operationId": "healthGet",
+    "summary": "Build, region and services (no probes)",
+    "description": "The build this deployment is running (version, build, commit, deployedTime), its region, base URL, mail domain and services, and a summary of the most recent health/check. Calls nothing and changes nothing, so it is safe to call as often as you like. The same build is on every response as the X-Build header. traceUrl is this request's X-Ray trace as a public page (no sign-in); it appears a few seconds after the response, and the page waits for it.",
+    "parameters": [],
+    "responses": {
+     "200": {
+      "description": "OK",
+      "content": {
+       "application/json": {
+        "schema": {
+         "type": "object",
+         "required": [
+          "build",
+          "services",
+          "checkUrl"
+         ],
+         "properties": {
+          "version": {
+           "type": "string",
+           "nullable": true,
+           "description": "API contract version (semver)."
+          },
+          "build": {
+           "type": "string",
+           "description": "Build id stamped at deploy time (yyyymmdd.hhmm UTC), or dev."
+          },
+          "commit": {
+           "type": "string",
+           "nullable": true,
+           "description": "Source commit; a trailing + means uncommitted changes."
+          },
+          "deployedTime": {
+           "type": "integer",
+           "nullable": true,
+           "description": "When it was deployed, UTC epoch seconds."
+          },
+          "region": {
+           "type": "string",
+           "nullable": true
+          },
+          "baseUrl": {
+           "type": "string",
+           "format": "uri"
+          },
+          "mailDomain": {
+           "type": "string",
+           "nullable": true
+          },
+          "services": {
+           "type": "array",
+           "items": {
+            "type": "string"
+           }
+          },
+          "checkUrl": {
+           "type": "string",
+           "format": "uri"
+          },
+          "lastCheck": {
+           "type": "object",
+           "nullable": true,
+           "description": "The most recent health/check, or null if none has run.",
+           "properties": {
+            "status": {
+             "type": "string"
+            },
+            "summary": {
+             "type": "string"
+            },
+            "build": {
+             "type": "string"
+            },
+            "checkedTime": {
+             "type": "integer"
+            },
+            "ageSeconds": {
+             "type": "integer"
+            },
+            "traceUrl": {
+             "type": "string",
+             "nullable": true,
+             "description": "The trace of that check run (public page)."
+            }
+           }
+          },
+          "traceId": {
+           "type": "string",
+           "nullable": true,
+           "description": "AWS X-Ray trace id of this request."
+          },
+          "traceSampled": {
+           "type": "boolean",
+           "description": "true: this request is being traced (health calls always are, unless tracing is switched off)."
+          },
+          "traceUrl": {
+           "type": "string",
+           "nullable": true,
+           "format": "uri",
+           "description": "This request's trace as a public page (trace/get?format=html; no sign-in). The trace is written as the request finishes; the page waits for it. null when not traced."
+          },
+          "traceComment": {
+           "type": "string",
+           "description": "Why there is no traceUrl."
+          },
+          "traceDataUrl": {
+           "type": "string",
+           "nullable": true,
+           "format": "uri",
+           "description": "The same trace as JSON (trace/get)."
+          },
+          "traceConsoleUrl": {
+           "type": "string",
+           "nullable": true,
+           "format": "uri",
+           "description": "The trace in the AWS console, for whoever operates the deployment (needs a sign-in to its AWS account)."
+          }
+         },
+         "example": {
+          "version": "1.3.0",
+          "build": "20261120.0412",
+          "commit": "a3f9c2e",
+          "deployedTime": 1795672320,
+          "region": "us-west-1",
+          "baseUrl": "{BASE_URL}",
+          "mailDomain": "{MAIL_DOMAIN}",
+          "services": [
+           "lists",
+           "names",
+           "lock",
+           "mail",
+           "sms",
+           "webhook",
+           "totp",
+           "qr",
+           "perf",
+           "recon",
+           "voice",
+           "health",
+           "trace"
+          ],
+          "checkUrl": "{BASE_URL}/health/check",
+          "lastCheck": {
+           "status": "ok",
+           "summary": "11 of 11 probes passed",
+           "build": "20261120.0412",
+           "checkedTime": 1795680001,
+           "ageSeconds": 42
+          },
+          "traceId": "1-673d9a1b-5f2a8c3e9d1b4a6f7e8c9d0a",
+          "traceSampled": true,
+          "traceUrl": "{BASE_URL}/trace/get?ref=1-673d9a1b-5f2a8c3e9d1b4a6f7e8c9d0a&format=html",
+          "traceDataUrl": "{BASE_URL}/trace/get?ref=1-673d9a1b-5f2a8c3e9d1b4a6f7e8c9d0a",
+          "traceConsoleUrl": "https://console.aws.amazon.com/xray/home?region=us-west-1#/traces/1-673d9a1b-5f2a8c3e9d1b4a6f7e8c9d0a"
+         }
+        }
+       }
+      }
+     }
+    }
+   }
+  },
+  "/health/check": {
+   "get": {
+    "tags": [
+     "health"
+    ],
+    "operationId": "healthCheck",
+    "summary": "Run (or serve the cached) end-to-end self-test",
+    "description": "Sends a real request with a known answer to every service through the public API, in parallel, within 20 s: lists (push, pop, exhausted pop, vars, counters), lock (acquire, contention, release), names (a seeded persona), qr (a fixed SVG), totp (the RFC 6238 test vectors), webhook (receive, list), perf (stats of 1..10), mail (a real send to this domain's catcher, delivery through SES inbound, pop, and a search of its attachment), sms (a mock text - no real text is sent) and voice (Polly voices, a stored utterance, and voice/find listening to that utterance through Amazon Transcribe for its words; transcribed once, then read from storage, so it is free after the first check). It also reads every function's configured build and reports any on another build. The probes run in a private namespace and clean up after themselves. The result is cached for 60 s, so repeated calls are cheap; fresh=true runs a new check unless the cached one is under 30 s old. Without strict the answer is 200 and status says how it went; with strict=true it is 503 unless status is ok, for uptime monitors. traceUrl is this request's X-Ray trace as a public page (no sign-in); checkTraceUrl is the trace of the run that produced the result (the same unless cached), which holds the health function and every probe request it made. Traces appear a few seconds after the response.",
+    "parameters": [
+     {
+      "name": "fresh",
+      "in": "query",
+      "required": false,
+      "schema": {
+       "type": "boolean",
+       "default": false
+      },
+      "description": "Run a new check instead of serving one up to 60 s old. Refused (the cached result is returned, with comment) while the cached result is under 30 s old."
+     },
+     {
+      "name": "strict",
+      "in": "query",
+      "required": false,
+      "schema": {
+       "type": "boolean",
+       "default": false
+      },
+      "description": "Answer 503 unless status is ok - for an uptime monitor or a pipeline gate that only looks at the status code."
+     }
+    ],
+    "responses": {
+     "200": {
+      "description": "The check result (status ok, degraded or down)",
+      "content": {
+       "application/json": {
+        "schema": {
+         "type": "object",
+         "required": [
+          "status",
+          "build",
+          "checkedTime",
+          "ageSeconds",
+          "cached",
+          "summary",
+          "services",
+          "buildMismatch"
+         ],
+         "properties": {
+          "version": {
+           "type": "string",
+           "nullable": true,
+           "description": "API contract version (semver)."
+          },
+          "build": {
+           "type": "string",
+           "description": "Build id stamped at deploy time (yyyymmdd.hhmm UTC), or dev."
+          },
+          "commit": {
+           "type": "string",
+           "nullable": true,
+           "description": "Source commit; a trailing + means uncommitted changes."
+          },
+          "deployedTime": {
+           "type": "integer",
+           "nullable": true,
+           "description": "When it was deployed, UTC epoch seconds."
+          },
+          "status": {
+           "type": "string",
+           "enum": [
+            "ok",
+            "degraded",
+            "down"
+           ],
+           "description": "ok: every probe passed and every function is on this build. degraded: a probe failed or timed out, or a function is on another build. down: lists, lock and webhook (the DynamoDB core) all failed, or nothing passed."
+          },
+          "region": {
+           "type": "string",
+           "nullable": true
+          },
+          "checkedTime": {
+           "type": "integer",
+           "description": "When the check ran, UTC epoch seconds."
+          },
+          "ageSeconds": {
+           "type": "integer",
+           "description": "How old this result is."
+          },
+          "cached": {
+           "type": "boolean",
+           "description": "true: this is the stored result of an earlier check."
+          },
+          "elapsedMs": {
+           "type": "integer",
+           "description": "How long the check took."
+          },
+          "summary": {
+           "type": "string",
+           "example": "11 of 11 probes passed"
+          },
+          "services": {
+           "type": "object",
+           "additionalProperties": {
+            "type": "object",
+            "required": [
+             "status",
+             "elapsedMs"
+            ],
+            "properties": {
+             "status": {
+              "type": "string",
+              "enum": [
+               "ok",
+               "fail",
+               "timeout"
+              ]
+             },
+             "elapsedMs": {
+              "type": "integer"
+             },
+             "requests": {
+              "type": "integer",
+              "description": "Requests the probe sent."
+             },
+             "build": {
+              "description": "X-Build of the responses the probe got (a list if they differed).",
+              "oneOf": [
+               {
+                "type": "string"
+               },
+               {
+                "type": "array",
+                "items": {
+                 "type": "string"
+                }
+               }
+              ]
+             },
+             "checked": {
+              "type": "string",
+              "description": "What the probe exercised."
+             },
+             "error": {
+              "type": "string",
+              "description": "What went wrong (fail, timeout)."
+             },
+             "hint": {
+              "type": "string",
+              "description": "What to look at, when the probe knows."
+             },
+             "detail": {
+              "type": "object",
+              "additionalProperties": true,
+              "description": "Expected and received values."
+             }
+            },
+            "additionalProperties": true
+           },
+           "description": "One probe per service: lists, names, lock, mail, sms, webhook, totp, qr, perf, voice."
+          },
+          "functionsChecked": {
+           "type": "integer",
+           "description": "Functions whose configured build was read."
+          },
+          "buildMismatch": {
+           "type": "array",
+           "description": "Functions (from their configuration) or services (from the X-Build of their responses) on a build other than this one. Normal for a minute during a deploy; otherwise a partial or rolled-back update.",
+           "items": {
+            "type": "object",
+            "properties": {
+             "function": {
+              "type": "string"
+             },
+             "service": {
+              "type": "string"
+             },
+             "build": {
+              "type": "string"
+             }
+            }
+           }
+          },
+          "comment": {
+           "type": "string",
+           "description": "Why a cached result was served (fresh refused, another caller's check)."
+          },
+          "traceId": {
+           "type": "string",
+           "nullable": true,
+           "description": "AWS X-Ray trace id of this request."
+          },
+          "traceSampled": {
+           "type": "boolean",
+           "description": "true: this request is being traced (health calls always are, unless tracing is switched off)."
+          },
+          "traceUrl": {
+           "type": "string",
+           "nullable": true,
+           "format": "uri",
+           "description": "This request's trace as a public page (trace/get?format=html; no sign-in). The trace is written as the request finishes; the page waits for it. null when not traced."
+          },
+          "traceComment": {
+           "type": "string",
+           "description": "Why there is no traceUrl."
+          },
+          "checkTraceId": {
+           "type": "string",
+           "nullable": true,
+           "description": "X-Ray trace id of the run that produced this result."
+          },
+          "checkTraceUrl": {
+           "type": "string",
+           "nullable": true,
+           "description": "That run's trace as a public page: the health function and every probe request it made, in one trace. Equals traceUrl when cached is false."
+          },
+          "traceDataUrl": {
+           "type": "string",
+           "nullable": true,
+           "format": "uri",
+           "description": "The same trace as JSON (trace/get)."
+          },
+          "traceConsoleUrl": {
+           "type": "string",
+           "nullable": true,
+           "format": "uri",
+           "description": "The trace in the AWS console, for whoever operates the deployment (needs a sign-in to its AWS account)."
+          },
+          "checkTraceDataUrl": {
+           "type": "string",
+           "nullable": true,
+           "description": "That run's trace as JSON."
+          }
+         },
+         "example": {
+          "version": "1.3.0",
+          "build": "20261120.0412",
+          "commit": "a3f9c2e",
+          "deployedTime": 1795672320,
+          "status": "ok",
+          "region": "us-west-1",
+          "checkedTime": 1795680001,
+          "elapsedMs": 6140,
+          "summary": "11 of 11 probes passed",
+          "services": {
+           "lists": {
+            "status": "ok",
+            "checked": "push, pop, exhausted pop, clear, vars, counters",
+            "elapsedMs": 812,
+            "requests": 11,
+            "build": "20261120.0412"
+           },
+           "mail": {
+            "status": "ok",
+            "checked": "send (SES), receive (MX, receipt rule, S3, parser), pop, attachment find",
+            "deliveryMs": 4310,
+            "elapsedMs": 5120,
+            "requests": 5,
+            "build": "20261120.0412"
+           }
+          },
+          "functionsChecked": 14,
+          "buildMismatch": [],
+          "cached": false,
+          "ageSeconds": 0,
+          "traceId": "1-673d9a1b-5f2a8c3e9d1b4a6f7e8c9d0a",
+          "traceSampled": true,
+          "traceUrl": "{BASE_URL}/trace/get?ref=1-673d9a1b-5f2a8c3e9d1b4a6f7e8c9d0a&format=html",
+          "checkTraceId": "1-673d9a1b-5f2a8c3e9d1b4a6f7e8c9d0a",
+          "checkTraceUrl": "{BASE_URL}/trace/get?ref=1-673d9a1b-5f2a8c3e9d1b4a6f7e8c9d0a&format=html",
+          "traceDataUrl": "{BASE_URL}/trace/get?ref=1-673d9a1b-5f2a8c3e9d1b4a6f7e8c9d0a",
+          "traceConsoleUrl": "https://console.aws.amazon.com/xray/home?region=us-west-1#/traces/1-673d9a1b-5f2a8c3e9d1b4a6f7e8c9d0a",
+          "checkTraceDataUrl": "{BASE_URL}/trace/get?ref=1-673d9a1b-5f2a8c3e9d1b4a6f7e8c9d0a"
+         }
+        }
+       }
+      }
+     },
+     "400": {
+      "$ref": "#/components/responses/Error"
+     },
+     "503": {
+      "description": "strict=true and status is not ok (the same body as 200), or a check is already running and there is no earlier result yet (an Error with retryAfterSeconds).",
+      "content": {
+       "application/json": {
+        "schema": {
+         "oneOf": [
+          {
+           "type": "object",
+           "required": [
+            "status",
+            "build",
+            "checkedTime",
+            "ageSeconds",
+            "cached",
+            "summary",
+            "services",
+            "buildMismatch"
+           ],
+           "properties": {
+            "version": {
+             "type": "string",
+             "nullable": true,
+             "description": "API contract version (semver)."
+            },
+            "build": {
+             "type": "string",
+             "description": "Build id stamped at deploy time (yyyymmdd.hhmm UTC), or dev."
+            },
+            "commit": {
+             "type": "string",
+             "nullable": true,
+             "description": "Source commit; a trailing + means uncommitted changes."
+            },
+            "deployedTime": {
+             "type": "integer",
+             "nullable": true,
+             "description": "When it was deployed, UTC epoch seconds."
+            },
+            "status": {
+             "type": "string",
+             "enum": [
+              "ok",
+              "degraded",
+              "down"
+             ],
+             "description": "ok: every probe passed and every function is on this build. degraded: a probe failed or timed out, or a function is on another build. down: lists, lock and webhook (the DynamoDB core) all failed, or nothing passed."
+            },
+            "region": {
+             "type": "string",
+             "nullable": true
+            },
+            "checkedTime": {
+             "type": "integer",
+             "description": "When the check ran, UTC epoch seconds."
+            },
+            "ageSeconds": {
+             "type": "integer",
+             "description": "How old this result is."
+            },
+            "cached": {
+             "type": "boolean",
+             "description": "true: this is the stored result of an earlier check."
+            },
+            "elapsedMs": {
+             "type": "integer",
+             "description": "How long the check took."
+            },
+            "summary": {
+             "type": "string",
+             "example": "11 of 11 probes passed"
+            },
+            "services": {
+             "type": "object",
+             "additionalProperties": {
+              "type": "object",
+              "required": [
+               "status",
+               "elapsedMs"
+              ],
+              "properties": {
+               "status": {
+                "type": "string",
+                "enum": [
+                 "ok",
+                 "fail",
+                 "timeout"
+                ]
+               },
+               "elapsedMs": {
+                "type": "integer"
+               },
+               "requests": {
+                "type": "integer",
+                "description": "Requests the probe sent."
+               },
+               "build": {
+                "description": "X-Build of the responses the probe got (a list if they differed).",
+                "oneOf": [
+                 {
+                  "type": "string"
+                 },
+                 {
+                  "type": "array",
+                  "items": {
+                   "type": "string"
+                  }
+                 }
+                ]
+               },
+               "checked": {
+                "type": "string",
+                "description": "What the probe exercised."
+               },
+               "error": {
+                "type": "string",
+                "description": "What went wrong (fail, timeout)."
+               },
+               "hint": {
+                "type": "string",
+                "description": "What to look at, when the probe knows."
+               },
+               "detail": {
+                "type": "object",
+                "additionalProperties": true,
+                "description": "Expected and received values."
+               }
+              },
+              "additionalProperties": true
+             },
+             "description": "One probe per service: lists, names, lock, mail, sms, webhook, totp, qr, perf, voice."
+            },
+            "functionsChecked": {
+             "type": "integer",
+             "description": "Functions whose configured build was read."
+            },
+            "buildMismatch": {
+             "type": "array",
+             "description": "Functions (from their configuration) or services (from the X-Build of their responses) on a build other than this one. Normal for a minute during a deploy; otherwise a partial or rolled-back update.",
+             "items": {
+              "type": "object",
+              "properties": {
+               "function": {
+                "type": "string"
+               },
+               "service": {
+                "type": "string"
+               },
+               "build": {
+                "type": "string"
+               }
+              }
+             }
+            },
+            "comment": {
+             "type": "string",
+             "description": "Why a cached result was served (fresh refused, another caller's check)."
+            },
+            "traceId": {
+             "type": "string",
+             "nullable": true,
+             "description": "AWS X-Ray trace id of this request."
+            },
+            "traceSampled": {
+             "type": "boolean",
+             "description": "true: this request is being traced (health calls always are, unless tracing is switched off)."
+            },
+            "traceUrl": {
+             "type": "string",
+             "nullable": true,
+             "format": "uri",
+             "description": "This request's trace as a public page (trace/get?format=html; no sign-in). The trace is written as the request finishes; the page waits for it. null when not traced."
+            },
+            "traceComment": {
+             "type": "string",
+             "description": "Why there is no traceUrl."
+            },
+            "checkTraceId": {
+             "type": "string",
+             "nullable": true,
+             "description": "X-Ray trace id of the run that produced this result."
+            },
+            "checkTraceUrl": {
+             "type": "string",
+             "nullable": true,
+             "description": "That run's trace as a public page: the health function and every probe request it made, in one trace. Equals traceUrl when cached is false."
+            },
+            "traceDataUrl": {
+             "type": "string",
+             "nullable": true,
+             "format": "uri",
+             "description": "The same trace as JSON (trace/get)."
+            },
+            "traceConsoleUrl": {
+             "type": "string",
+             "nullable": true,
+             "format": "uri",
+             "description": "The trace in the AWS console, for whoever operates the deployment (needs a sign-in to its AWS account)."
+            },
+            "checkTraceDataUrl": {
+             "type": "string",
+             "nullable": true,
+             "description": "That run's trace as JSON."
+            }
+           },
+           "example": {
+            "version": "1.3.0",
+            "build": "20261120.0412",
+            "commit": "a3f9c2e",
+            "deployedTime": 1795672320,
+            "status": "ok",
+            "region": "us-west-1",
+            "checkedTime": 1795680001,
+            "elapsedMs": 6140,
+            "summary": "11 of 11 probes passed",
+            "services": {
+             "lists": {
+              "status": "ok",
+              "checked": "push, pop, exhausted pop, clear, vars, counters",
+              "elapsedMs": 812,
+              "requests": 11,
+              "build": "20261120.0412"
+             },
+             "mail": {
+              "status": "ok",
+              "checked": "send (SES), receive (MX, receipt rule, S3, parser), pop, attachment find",
+              "deliveryMs": 4310,
+              "elapsedMs": 5120,
+              "requests": 5,
+              "build": "20261120.0412"
+             }
+            },
+            "functionsChecked": 14,
+            "buildMismatch": [],
+            "cached": false,
+            "ageSeconds": 0,
+            "traceId": "1-673d9a1b-5f2a8c3e9d1b4a6f7e8c9d0a",
+            "traceSampled": true,
+            "traceUrl": "{BASE_URL}/trace/get?ref=1-673d9a1b-5f2a8c3e9d1b4a6f7e8c9d0a&format=html",
+            "checkTraceId": "1-673d9a1b-5f2a8c3e9d1b4a6f7e8c9d0a",
+            "checkTraceUrl": "{BASE_URL}/trace/get?ref=1-673d9a1b-5f2a8c3e9d1b4a6f7e8c9d0a&format=html",
+            "traceDataUrl": "{BASE_URL}/trace/get?ref=1-673d9a1b-5f2a8c3e9d1b4a6f7e8c9d0a",
+            "traceConsoleUrl": "https://console.aws.amazon.com/xray/home?region=us-west-1#/traces/1-673d9a1b-5f2a8c3e9d1b4a6f7e8c9d0a",
+            "checkTraceDataUrl": "{BASE_URL}/trace/get?ref=1-673d9a1b-5f2a8c3e9d1b4a6f7e8c9d0a"
+           }
+          },
+          {
+           "$ref": "#/components/schemas/Error"
+          }
+         ]
+        }
+       }
+      }
+     }
+    }
+   }
+  }
+ }
+}

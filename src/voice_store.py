@@ -1,6 +1,6 @@
-"""voice_store - configuration, AWS clients, the audio store and the spend guard.
+"""voice_store - configuration, AWS clients, the audio store and the spend guards.
 
-One bucket (VOICE_BUCKET), two stores, mirroring mail attachments:
+One bucket (VOICE_BUCKET), three stores, mirroring mail attachments:
 
 * GENERATED  generated/audio/<ref> + generated/meta/<ref>.json
              ref = hash of the whole request, so the same request always
@@ -11,12 +11,23 @@ One bucket (VOICE_BUCKET), two stores, mirroring mail attachments:
 * SAVED      saved/audio/<key> + saved/meta/<key>.json
              caller-chosen key, kept until deleted: a pinned utterance or an
              uploaded recording.
+* HEARD      heard/audio/<ref>.<ext> + heard/meta/<ref>.json + heard/raw/<ref>.json
+             audio given to voice/listen and what was made of it. ref = hash
+             of the audio and the language it was listened to in, so the same
+             audio is the same transcript, once. Expires after HEARD_DAYS: it
+             is evidence from one run, and it holds whatever the system under
+             test said.
+
+A ref says which store it lives in: v... was said (generated), h... was heard.
 
 The meta object's existence is what makes an utterance real: audio is written
 first, meta last.
 
 Speech comes from Amazon Polly in VOICE_REGION, which need not be the stack's
 region (the neural and generative engines are not offered everywhere).
+Transcripts come from Amazon Transcribe in the stack's OWN region: a
+transcription job reads its audio from S3, and the bucket has to be in the
+region the job runs in.
 """
 import hashlib
 import json
@@ -36,9 +47,13 @@ GENERATED_AUDIO = 'generated/audio/'
 GENERATED_META = 'generated/meta/'
 SAVED_AUDIO = 'saved/audio/'
 SAVED_META = 'saved/meta/'
+HEARD_AUDIO = 'heard/audio/'
+HEARD_META = 'heard/meta/'
+HEARD_RAW = 'heard/raw/'
 
-REF_RE = re.compile(r'^v[a-z0-9]{11}$')
+REF_RE = re.compile(r'^[vh][a-z0-9]{11}$')
 REF_DAYS = 30             # keep in step with the bucket's lifecycle rule on generated/
+HEARD_DAYS = 30           # ... and with its rule on heard/
 TOUCH_AFTER = 86400       # refresh an utterance's expiry at most once a day
 PRESIGN_TTL = 900         # seconds; well inside the Lambda role's credential lifetime
 VOICES_TTL = 6 * 3600     # the Polly voice list is re-read this often per container
@@ -76,6 +91,17 @@ def daily_characters():
         return 25000
 
 
+def listen_language():
+    return env('VOICE_LANGUAGE') or 'en-AU'
+
+
+def daily_listen_seconds():
+    try:
+        return int(env('VOICE_DAILY_LISTEN_SECONDS') or 1800)
+    except ValueError:
+        return 1800
+
+
 def now():
     return int(time.time())
 
@@ -105,6 +131,19 @@ def polly():
     return _clients['polly']
 
 
+def transcribe():
+    if 'transcribe' not in _clients:
+        reg = env('AWS_REGION') or env('AWS_DEFAULT_REGION')
+        _clients['transcribe'] = boto3.client(
+            'transcribe', region_name=reg or None,
+            # One attempt, tightly bounded: a job is polled anyway, and the
+            # longest wait (20 s) plus one hung call must still fit inside
+            # API Gateway's 29 s.
+            config=Config(connect_timeout=2, read_timeout=4,
+                          retries={'max_attempts': 1, 'mode': 'standard'}))
+    return _clients['transcribe']
+
+
 def table():
     if 'table' not in _clients:
         _clients['table'] = boto3.resource('dynamodb').Table(env('VOICE_TABLE'))
@@ -118,26 +157,48 @@ def reset_clients():
 
 
 # ----------------------------------------------------------------- refs ----
-def ref_of(canonical):
-    """The ref for a canonical request: 'v' + 11 base-36 characters of its SHA-256."""
-    blob = json.dumps(canonical, sort_keys=True, separators=(',', ':'), ensure_ascii=False)
-    n = int(hashlib.sha256(blob.encode('utf-8')).hexdigest(), 16)
+def _base36(hexdigest, length=11):
+    n = int(hexdigest, 16)
     digits = '0123456789abcdefghijklmnopqrstuvwxyz'
     out = ''
-    while len(out) < 11:
+    while len(out) < length:
         n, r = divmod(n, 36)
         out += digits[r]
-    return 'v' + out
+    return out
 
 
-def check_ref(ref):
+def ref_of(canonical):
+    """The ref for a canonical say request: 'v' + 11 base-36 characters of its SHA-256."""
+    blob = json.dumps(canonical, sort_keys=True, separators=(',', ':'), ensure_ascii=False)
+    return 'v' + _base36(hashlib.sha256(blob.encode('utf-8')).hexdigest())
+
+
+def heard_ref(audio, language, recipe):
+    """The ref for one listening: 'h' + 11 base-36 characters of the SHA-256 of
+    the audio itself and of how it is listened to."""
+    h = hashlib.sha256(audio)
+    h.update(('|%s|%s' % (language, recipe)).encode('utf-8'))
+    return 'h' + _base36(h.hexdigest())
+
+
+def check_ref(ref, name='ref'):
     if not REF_RE.match(ref or ''):
-        raise ApiError(400, "'ref' must be a ref returned by voice/say (v followed by 11 "
-                            "letters and digits).", received=ref)
+        raise ApiError(400, "'%s' must be a ref returned by voice/say (v...) or voice/listen "
+                            "(h...): one letter followed by 11 letters and digits." % name,
+                       received=ref)
     return ref
 
 
+def is_heard(ref):
+    return bool(ref) and ref[0] == 'h'
+
+
 def ref_not_found(ref):
+    if is_heard(ref):
+        return ApiError(404, 'Nothing heard under that ref (heard audio is kept %d days).'
+                        % HEARD_DAYS, ref=ref,
+                        hint='POST the audio to voice/listen again; pin one for good with '
+                             'voice/save')
     return ApiError(404, 'No utterance for that ref (generated audio is kept %d days after '
                          'its last use).' % REF_DAYS, ref=ref,
                     hint='say it again with voice/say; pin one for good with voice/save')
@@ -165,6 +226,16 @@ def load(s3key):
 def put_json(s3key, obj):
     s3().put_object(Bucket=bucket(), Key=s3key, ContentType='application/json',
                     Body=json.dumps(obj, ensure_ascii=False).encode('utf-8'))
+
+
+def load_bytes_json(s3key):
+    """A JSON object stored by someone else (Transcribe's output), or None."""
+    try:
+        return json.loads(read(s3key).decode('utf-8'))
+    except ClientError as e:
+        if e.response.get('Error', {}).get('Code') in ('NoSuchKey', '404', 'NotFound'):
+            return None
+        raise
 
 
 def put_audio(s3key, data, content_type, filename):
@@ -318,32 +389,22 @@ def pick_voice(want, language, engine, seed=None):
     return pool[0], _code(pool[0], lang), False
 
 
-# --------------------------------------------------------- spend guard ----
+# -------------------------------------------------------- spend guards ----
 def _day():
     return time.strftime('%Y-%m-%d', time.gmtime())
 
 
-def reserve(characters):
-    """Count characters against today's budget BEFORE calling Polly, or refuse.
-    Every cache miss costs money per character and the endpoint is open, so the
-    day's synthesis is capped; cached and saved audio is never affected."""
-    limit = daily_characters()
-    midnight = 86400 - now() % 86400
-    if limit <= 0:
-        raise ApiError(403, 'Speech synthesis is switched off on this deployment. Stored '
-                            'audio (voice/get) still works.', synthesisDisabled=True)
-    refused = ApiError(429, "Today's speech synthesis budget is used up. Utterances already "
-                            'generated (the same request again, or voice/get) still work.',
-                       budgetExhausted=True, dailyCharacters=limit, retryAfterSeconds=midnight)
-    if characters > limit:
+def _reserve(pk, attribute, amount, limit, refused):
+    """Count `amount` against today's budget BEFORE spending it, or raise `refused`."""
+    if amount > limit:
         raise refused
     try:
         table().update_item(
-            Key={'PK': 'budget', 'SK': _day()},
-            UpdateExpression='ADD characters :n SET #t = :ttl',
-            ConditionExpression='attribute_not_exists(characters) OR characters <= :room',
-            ExpressionAttributeNames={'#t': 'ttl'},
-            ExpressionAttributeValues={':n': characters, ':room': limit - characters,
+            Key={'PK': pk, 'SK': _day()},
+            UpdateExpression='ADD #a :n SET #t = :ttl',
+            ConditionExpression='attribute_not_exists(#a) OR #a <= :room',
+            ExpressionAttributeNames={'#a': attribute, '#t': 'ttl'},
+            ExpressionAttributeValues={':n': amount, ':room': limit - amount,
                                        ':ttl': now() + BUDGET_KEEP_DAYS * 86400})
     except ClientError as e:
         if e.response.get('Error', {}).get('Code') != 'ConditionalCheckFailedException':
@@ -351,18 +412,65 @@ def reserve(characters):
         raise refused
 
 
-def refund(characters):
+def _refund(pk, attribute, amount):
     try:
-        table().update_item(Key={'PK': 'budget', 'SK': _day()},
-                            UpdateExpression='ADD characters :n',
-                            ExpressionAttributeValues={':n': -characters})
+        table().update_item(Key={'PK': pk, 'SK': _day()},
+                            UpdateExpression='ADD #a :n',
+                            ExpressionAttributeNames={'#a': attribute},
+                            ExpressionAttributeValues={':n': -amount})
     except Exception:  # noqa: BLE001
         pass
 
 
-def used_today():
+def _used(pk, attribute):
     try:
-        it = table().get_item(Key={'PK': 'budget', 'SK': _day()}).get('Item') or {}
-        return int(it.get('characters', 0))
+        it = table().get_item(Key={'PK': pk, 'SK': _day()}).get('Item') or {}
+        return int(it.get(attribute, 0))
     except Exception:  # noqa: BLE001
         return None
+
+
+def reserve(characters):
+    """Characters for Polly. Every cache miss costs money per character and the
+    endpoint is open, so the day's synthesis is capped; cached and saved audio
+    is never affected."""
+    limit = daily_characters()
+    if limit <= 0:
+        raise ApiError(403, 'Speech synthesis is switched off on this deployment. Stored '
+                            'audio (voice/get) still works.', synthesisDisabled=True)
+    _reserve('budget', 'characters', characters, limit, ApiError(
+        429, "Today's speech synthesis budget is used up. Utterances already generated (the "
+             'same request again, or voice/get) still work.',
+        budgetExhausted=True, dailyCharacters=limit, retryAfterSeconds=86400 - now() % 86400))
+
+
+def refund(characters):
+    _refund('budget', 'characters', characters)
+
+
+def used_today():
+    return _used('budget', 'characters')
+
+
+def reserve_seconds(seconds):
+    """Seconds of audio for Transcribe, which bills by the second. Audio already
+    listened to is never affected."""
+    limit = daily_listen_seconds()
+    if limit <= 0:
+        raise ApiError(403, 'Listening is switched off on this deployment. Transcripts '
+                            'already made still work.', listeningDisabled=True)
+    if seconds > limit:
+        raise ApiError(400, "This audio is longer than a whole day's listening budget on this "
+                            "deployment.", seconds=seconds, dailyListenSeconds=limit)
+    _reserve('listen', 'seconds', seconds, limit, ApiError(
+        429, "Today's listening budget is used up. Audio already listened to (the same audio "
+             'again, or its ref) still works.',
+        budgetExhausted=True, dailyListenSeconds=limit, retryAfterSeconds=86400 - now() % 86400))
+
+
+def refund_seconds(seconds):
+    _refund('listen', 'seconds', seconds)
+
+
+def heard_today():
+    return _used('listen', 'seconds')

@@ -26,6 +26,39 @@ CORS = {
 }
 
 
+# ------------------------------------------------------------------ build stamp
+# deploy.ps1 (or Terraform) stamps every function with the same BUILD_ID,
+# BUILD_COMMIT and DEPLOYED_TIME, so any response can be tied to the exact
+# deployment that produced it (X-Build header) and health/check can spot a
+# function left on an older build. The contract version lives in version.json.
+_build = None
+
+
+def build_info():
+    """{'version', 'build', 'commit', 'deployedTime'} of this function's deployment."""
+    global _build
+    if _build is None:
+        import os
+        try:
+            here = os.path.dirname(os.path.abspath(__file__))
+            version = json.load(open(os.path.join(here, 'version.json'), encoding='utf-8'))['version']
+        except Exception:     # noqa: BLE001 - a missing file must not break every response
+            version = None
+        try:
+            deployed = int(os.environ.get('DEPLOYED_TIME') or 0) or None
+        except ValueError:
+            deployed = None
+        _build = {'version': version,
+                  'build': os.environ.get('BUILD_ID') or 'dev',
+                  'commit': os.environ.get('BUILD_COMMIT') or None,
+                  'deployedTime': deployed}
+    return dict(_build)
+
+
+def build_headers():
+    return {'X-Build': build_info()['build']}
+
+
 class ApiError(Exception):
     """Raise anywhere inside a handler to return a uniform error body."""
 
@@ -177,6 +210,7 @@ def respond(status, obj, headers=None):
     h = {'Content-Type': 'application/json; charset=utf-8',
          'Cache-Control': 'no-store'}
     h.update(CORS)
+    h.update(build_headers())
     if headers:
         h.update(headers)
     return {'statusCode': status, 'headers': h, 'body': dumps(obj)}
@@ -185,6 +219,7 @@ def respond(status, obj, headers=None):
 def raw(status, body, content_type, headers=None, base64_body=False):
     h = {'Content-Type': content_type, 'Cache-Control': 'no-store'}
     h.update(CORS)
+    h.update(build_headers())
     if headers:
         h.update(headers)
     out = {'statusCode': status, 'headers': h, 'body': body}

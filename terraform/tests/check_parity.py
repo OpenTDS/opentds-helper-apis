@@ -88,21 +88,21 @@ FN = {  # CFN function logical id -> TF functions key
     'ListsFunction': 'lists', 'ListsWorkerFunction': 'lists_worker', 'MailFunction': 'mail',
     'MailInboxFunction': 'mail_inbox', 'MailReceiveFunction': 'mail_receive',
     'WebhookFunction': 'webhook', 'TotpFunction': 'totp', 'LockFunction': 'lock',
-    'PerfFunction': 'perf', 'SmsFunction': 'sms', 'VoiceFunction': 'voice',
+    'PerfFunction': 'perf', 'ReconFunction': 'recon', 'SmsFunction': 'sms', 'VoiceFunction': 'voice',
     'NamesFunction': 'names', 'QrFunction': 'qr',
-    'DiscoveryFunction': 'discovery',
+    'DiscoveryFunction': 'discovery', 'HealthFunction': 'health', 'TraceFunction': 'trace',
 }
 ROLE = {
     'ListsRole': 'lists', 'ListsWorkerRole': 'lists_worker', 'MailRole': 'mail',
     'MailReceiveRole': 'mail_receive', 'WebhookRole': 'webhook', 'TotpRole': 'totp',
-    'LockRole': 'lock', 'PerfRole': 'perf', 'SmsRole': 'sms', 'VoiceRole': 'voice',
-    'StatelessRole': 'stateless',
+    'LockRole': 'lock', 'PerfRole': 'perf', 'ReconRole': 'recon', 'SmsRole': 'sms', 'VoiceRole': 'voice',
+    'StatelessRole': 'stateless', 'HealthRole': 'health', 'TraceRole': 'trace',
 }
 TABLE = {
     'ListsTable': 'lists', 'ListsVarsTable': 'lists_vars', 'ListsCountersTable': 'lists_counters',
     'ListsCleanupTable': 'lists_cleanup', 'MailTable': 'mail', 'WebhookTable': 'webhook',
-    'TotpTable': 'totp', 'PerfTable': 'perf', 'SmsTable': 'sms', 'LockTable': 'lock',
-    'VoiceTable': 'voice',
+    'TotpTable': 'totp', 'PerfTable': 'perf', 'ReconTable': 'recon', 'SmsTable': 'sms', 'LockTable': 'lock',
+    'VoiceTable': 'voice', 'HealthTable': 'health',
 }
 BUCKET = {'ListsImportBucket': 'imports', 'MailAttachmentBucket': 'attachments',
           'MailInboundBucket': 'inbound', 'VoiceBucket': 'voice'}
@@ -120,15 +120,20 @@ PARAM_VAR = {
     'VoiceName': 'var.voice_name',
     'VoiceEngine': 'var.voice_engine',
     'VoiceDailyCharacters': 'tostring(var.voice_daily_characters)',
+    'VoiceLanguage': 'var.voice_language',
+    'VoiceDailyListenSeconds': 'tostring(var.voice_daily_listen_seconds)',
     'Domain': 'var.domain',
+    'BuildId': 'local.build_id',
+    'BuildCommit': 'var.build_commit',
+    'DeployedTime': 'tostring(local.deployed_time)',
 }
 
 
 def tf_table_ref(key, attr):
     if key == 'sms':
         return f'aws_dynamodb_table.sms.{attr}'
-    if key == 'lock':
-        return f'aws_dynamodb_table.lock.{attr}'
+    if key in ('lock', 'health', 'recon'):
+        return f'aws_dynamodb_table.{key}.{attr}'
     return f'aws_dynamodb_table.this["{key}"].{attr}'
 
 
@@ -147,6 +152,15 @@ def cfn_env_value(v):
         sub = v['!Sub']
         if sub == 'https://${ApiHostLabel}.${Domain}/v1':
             return 'local.base_url'
+        if sub == '${AWS::StackName}-':
+            return '${var.name_prefix}-'
+        if re.fullmatch(r'(\w+=\$\{\w+Function\},?)+', sub):
+            # HEALTH_FUNCTIONS: key=<function name>,... for every function but health.
+            pairs = [p.split('=') for p in sub.split(',')]
+            check(sorted(k for k, _ in pairs) == sorted(k for k in FN.values() if k != 'health'),
+                  f'HEALTH_FUNCTIONS keys {[k for k, _ in pairs]} are not every other function')
+            check(all(FN.get(v[2:-1]) == k for k, v in pairs), 'HEALTH_FUNCTIONS maps a key to another function')
+            return 'join(",", [for k, n in local.fn_name : "${k}=${n}" if k != "health"])'
         m = re.fullmatch(r'\$\{BucketPrefix\}-(.+)-\$\{AWS::AccountId\}-\$\{AWS::Region\}', sub)
         if m:
             return f'local.bucket.{BUCKET_SUB[m.group(1)]}'
@@ -161,16 +175,22 @@ def cfn_arn(r):
         logical = r['!GetAtt'].split('.')[0]
         if logical in TABLE:
             k = TABLE[logical]
-            return {'sms': 'aws_dynamodb_table.sms.arn', 'lock': 'aws_dynamodb_table.lock.arn'}.get(k, f'local.t.{k}')
+            return {'sms': 'aws_dynamodb_table.sms.arn', 'lock': 'aws_dynamodb_table.lock.arn',
+                    'health': 'aws_dynamodb_table.health.arn',
+                    'recon': 'aws_dynamodb_table.recon.arn'}.get(k, f'local.t.{k}')
         if logical == 'ListsWorkerFunction':
             return 'lambda:function:lists_worker'
     sub = r['!Sub']
     if sub == '${SmsTable.Arn}/index/*':
         return '${aws_dynamodb_table.sms.arn}/index/*'
+    if sub == '${ReconTable.Arn}/index/*':
+        return '${aws_dynamodb_table.recon.arn}/index/*'
     m = re.fullmatch(r'arn:\$\{AWS::Partition\}:s3:::\$\{BucketPrefix\}-(.+?)-\$\{AWS::AccountId\}-\$\{AWS::Region\}(/.*)?', sub)
     if m:
         b = BUCKET_SUB[m.group(1)]
         return f'${{local.bucket_arn.{b}}}{m.group(2)}' if m.group(2) else f'local.bucket_arn.{b}'
+    if sub == 'arn:${AWS::Partition}:lambda:${AWS::Region}:${AWS::AccountId}:function:${AWS::StackName}-*':
+        return 'lambda:function:<prefix>-*'
     m = re.fullmatch(r'arn:\$\{AWS::Partition\}:ses:\$\{AWS::Region\}:\$\{AWS::AccountId\}:(.*)', sub)
     if m:
         return '${local.ses_identity_arn}:' + m.group(1).replace('${Domain}', '${var.domain}')
@@ -181,6 +201,8 @@ def tf_arn(r):
     r = str(r)
     if 'function:${local.fn_name.lists_worker}' in r:
         return 'lambda:function:lists_worker'
+    if r == 'arn:${local.partition}:lambda:${local.region}:${local.account}:function:${var.name_prefix}-*':
+        return 'lambda:function:<prefix>-*'
     return s(r) if re.fullmatch(r'\$\{[^}]*\}', r) else r
 
 
@@ -199,9 +221,13 @@ for logical, key in FN.items():
     check(t['memory'] == p['MemorySize'], f'{key}: memory {t["memory"]} vs {p["MemorySize"]}')
     check(t['timeout'] == p['Timeout'], f'{key}: timeout {t["timeout"]} vs {p["Timeout"]}')
     check(t['role'] == ROLE[p['Role']['!GetAtt'].split('.')[0]], f'{key}: role {t["role"]}')
+    tc = (p.get('TracingConfig') or {}).get('Mode')
+    check(tc == {'!If': ['UseTracing', 'Active', 'PassThrough']}, f'{key}: TracingConfig {tc}')
     env = t['env']
     if isinstance(env, str):
         env = L[s(env).split('.')[1]]
+    # The resource merges local.build_env into every function's environment.
+    env = {**L['build_env'], **env}
     cenv = p.get('Environment', {}).get('Variables', {})
     check(set(env) == set(cenv), f'{key}: env keys differ {set(env) ^ set(cenv)}')
     for k, v in cenv.items():
@@ -310,6 +336,22 @@ check(len(gr) == 4, 'expected 4 gateway responses in CFN')
 check(tgr['response_templates']['application/json'] ==
       gr[0]['ResponseTemplates']['application/json'], 'gateway response template differs')
 check(tgr['response_parameters'] == gr[0]['ResponseParameters'], 'gateway response headers differ')
+
+# X-Ray tracing: stage, role policy, sampling rule
+check(R['V1Stage']['Properties'].get('TracingEnabled') == {'!If': ['UseTracing', True, False]},
+      'V1Stage TracingEnabled')
+check(s(tf['resource'][('aws_api_gateway_stage', 'v1')].get('xray_tracing_enabled')) == 'var.tracing',
+      'TF v1 stage xray_tracing_enabled')
+check('tracing_config' in tf['resource'][('aws_lambda_function', 'this')], 'TF functions lack tracing_config')
+check(('aws_iam_role_policy_attachment', 'xray') in tf['resource'], 'TF roles lack the X-Ray policy')
+for logical in ROLE:
+    check(any('AWSXRayDaemonWriteAccess' in str(m) for m in R[logical]['Properties']['ManagedPolicyArns']),
+          f'{logical} lacks the X-Ray policy')
+rule = R['HealthSamplingRule']['Properties']['SamplingRule']
+trule = tf['resource'][('aws_xray_sampling_rule', 'health')]
+check((rule['URLPath'], rule['FixedRate'], rule['ReservoirSize'], rule['Priority']) ==
+      (trule['url_path'], trule['fixed_rate'], trule['reservoir_size'], trule['priority']),
+      'health sampling rule differs')
 
 # REST API settings
 v1 = tf['resource'][('aws_api_gateway_rest_api', 'v1')]
