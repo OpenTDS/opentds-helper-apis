@@ -19,6 +19,7 @@ ROUTES = {
     'attachments/find': mail_attachments.find,
     'attachments/text': mail_attachments.text,
     'attachments/compare': mail_attachments.compare,
+    'attachments/make': mail_attachments.make,
     'attachments/upload': mail_attachments.upload_page,
     'attachments/upload/url': mail_attachments.upload_url,
 }

@@ -58,7 +58,7 @@ https://api.<domain>/v1/<service>/<resource>/<action>
 | `address` | An email address (the mail catcher's namespace). Case-insensitive. |
 | `name` | A named item within a key (a variable, a counter). |
 | `user` | A user within a key (TOTP). |
-| `ref` | A handle the API issued and you pass back: an import, a received attachment, a lock, a generated utterance (`v...`), a listening (`h...`), a trace (`1-...`). Where two kinds of ref share an endpoint the first letter says which. |
+| `ref` | A handle the API issued and you pass back: an import, a temporary attachment (received, or made without a `key`), a lock, a generated utterance (`v...`), a listening (`h...`), a trace (`1-...`). Where two kinds of ref share an endpoint the first letter says which. |
 | `value` | The value being stored (`recon`: the value being reconciled, matched on both sides). |
 | `text` / `text64` | Literal text (QR payload, search term, words to speak, words expected to be heard). |
 | `wait` | Seconds to hold the request open for something to happen, 0–20 (import: 0–25). 0 = return immediately. Opt-in (default 0) wherever there is a useful answer without waiting; the default is 20 on `voice/listen`, `voice/find` and `voice/compare`, which have nothing to say until the audio is transcribed. Out of time is a 200 with `pending: true`, never an error. |
@@ -67,7 +67,7 @@ https://api.<domain>/v1/<service>/<resource>/<action>
 | `start` | First index to return (1-based). |
 | `format` | Output or input format (`json`, `csv`, `svg`, `html`; for `voice`, the audio: `mp3`, `wav`, `pcm`, ...). |
 | `seed` | Makes a random result repeatable. |
-| `url` / `view` / `download` | On an action that returns a file (`mail/attachments/get`, `voice/say`, `voice/get`): a presigned URL instead of inline base64, or a 302 to the file itself (shown / saved by a browser). `voice` adds `play`: an HTML page that plays the audio from script, with no player. |
+| `url` / `view` / `download` | On an action that returns a file (`mail/attachments/get`, `mail/attachments/make`, `voice/say`, `voice/get`): a presigned URL instead of inline base64, or a 302 to the file itself (shown / saved by a browser). `voice` adds `play`: an HTML page that plays the audio from script, with no player. |
 
 ## 4. Action vocabulary
 
@@ -90,6 +90,7 @@ The same verb means the same thing in every service.
 | `acquire` / `release` | Take / give back a lock. |
 | `send` / `receive` | Outbound / inbound message. |
 | `save` | Store a file. |
+| `make` | Generate a file and store it (`mail/attachments/make`: a PDF). The same parameters and `seed` make the same bytes. |
 | `say` | Turn text into spoken audio. The same request always returns the same stored audio. |
 | `listen` | Turn audio into the words spoken in it. The same audio is transcribed once. |
 | `find` | Search inside stored content: a file's text, or the words heard in audio. Same three modes everywhere: `text`, `regex`, `left` (+ `right`). |

@@ -50,12 +50,13 @@ the pre-v1 names, for anyone porting a script.
 | `mail/pop` | `address`*, `wait` (0–20), `grace` | `/email/pop?email=` |
 | `mail/reset` | `address`* | `/email/reset` |
 | `mail/clear` | `address`* | `/email/clear` |
-| `mail/send` (+POST; JSON body can carry several attachments) | `from`*, `to`*, `subject`*, `body`* (GET; POST body is the message), `attachmentkb`, `filename`, `key` (saved attachment), `ref` (received attachment), `prepend64`, `overwrite64`, `append64` | `/email/send` (`fromaddress`, `toaddress`, `message`, `attachmentsize`, `name`/`attachmentname`, `injectstart`/`injectmiddle`/`injectend`) |
+| `mail/send` (+POST; JSON body can carry several attachments) | `from`*, `to`*, `subject`*, `body`* (GET; POST body is the message), `attachmentkb`, `filename`, `key` (saved attachment), `ref` (received or made attachment), `prepend64`, `overwrite64`, `append64`; a generated attachment named `*.pdf` is a real PDF: + `pages`, `password`/`password64`, `seed`, `paper` | `/email/send` (`fromaddress`, `toaddress`, `message`, `attachmentsize`, `name`/`attachmentname`, `injectstart`/`injectmiddle`/`injectend`) |
 | `mail/attachments/save` (+POST) | `key`*, `filename`, `ref` (promote a received attachment; POST body = raw bytes as application/octet-stream, or base64 text) | `/email/saveattachment` |
 | `mail/attachments/get` | `key` \| `ref`, `url`, `download`, `view`, `password`/`password64` | `/email/getattachment`, `/email/getreceivedattachment` |
 | `mail/attachments/delete` | `key`* | `/email/deleteattachment` |
 | `mail/attachments/find` | `key` \| `ref`, one of `text`/`text64`, `regex`/`regex64`, `left`(+`right`)/`left64`/`right64`; `password`/`password64`, `in` (`text`\|`metadata`\|`all`), `exact`, `context`, `ignorecase`, `dotall`, `limit` | `/email/findinattachment` (`search`, `leftboundary`/`lb`, `contextchars`, `maxresults`) |
 | `mail/attachments/compare` | `key` \| `ref`, `otherkey` \| `otherref`, `password`/`password64`, `otherpassword`/`otherpassword64` | — (new) |
+| `mail/attachments/make` | `pages` (1–500), `kb` (exact size, ≤ 6000; ≤ 2048 with a password), `prepend64` (top of page 1), `overwrite64` (middle page), `append64` (end of last page), `key` (save; else a 7-day `ref`), `filename`, `title`/`author`/`subject` (+`64`), `meta64` (JSON of custom properties), `password`/`password64` (AES-256), `seed`, `paper` (`a4` \| `letter`), `url`, `view`, `download` | — (new) |
 | `mail/attachments/text` | `key` \| `ref`, `password`/`password64`, `page`, `format` (`json`\|`text`) | — (new) |
 | `mail/attachments/upload` | — | `/email/upload` |
 | `mail/attachments/upload/url` | `key`*, `filename`, `size` | `/email/uploadurl` |

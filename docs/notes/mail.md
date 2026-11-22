@@ -7,7 +7,8 @@ Source modules (all flat in `v1/src/`):
 | `mail.py` | API handler `mail.handler` — routes via `common.run` |
 | `mail_inbox.py` | `pop`, `reset`, `clear` (DynamoDB pointer queue; race-safe conditional pointer advance, pending/skip logic, grace re-offer — unchanged from the old function) |
 | `mail_send.py` | `send` (SES v1 `SendEmail` for plain mail, SESv2 `SendEmail` Raw for attachments) |
-| `mail_attachments.py` | `attachments/save|get|delete|find|text|upload|upload/url` + the uploader HTML page |
+| `mail_attachments.py` | `attachments/save|get|delete|find|text|compare|make|upload|upload/url` + the uploader HTML page |
+| `mail_pdf_write.py` | stdlib PDF writer for `attachments/make` and generated `*.pdf` attachments on `send`: page layout, injected text by page, exact sizing via a `/PieceInfo` padding stream, document info, AES-256 (R6) encryption |
 | `mail_extract.py` | text extraction for find/text (PDF via `mail_pdf.py`, Office XML, text) and the search helpers |
 | `mail_pdf.py`, `mail_pdf_metrics.py`, `mail_crypto.py` | pure-Python PDF reader: objects, object streams, fonts/ToUnicode, page layout, standard security handler (RC4, AES-128/256) |
 | `mail_extract.py` | stdlib PDF / OOXML / text extraction and literal / regex / boundary search (SIGALRM guards) |
@@ -175,3 +176,24 @@ bucket with prefix `inbound/`, and the rule-set activator custom resource.
    with no matching header lands under the first header address rather than the envelope
    recipient (SES's S3 action does not add the envelope recipient as a header). Unchanged
    behaviour; switching the receipt rule to an SNS/Lambda action would expose the envelope.
+
+
+## attachments/make (PDF generation)
+
+* Without `key` the PDF is written to the INBOUND bucket at `attachments/<ref>` — the same place,
+  ref format and 7-day lifecycle as a received attachment, so every `ref=` parameter takes it with no
+  further change. That is why MailRole has `s3:PutObject` on `<inbound>/attachments/*` (template and
+  Terraform). Object metadata `source=made` makes `attachments/get` report `source: "made"`.
+* Injection is by page (prepend: top of page 1; overwrite: centred on page `(n+1)//2`; append: bottom
+  of the last page), never by byte offset. Text is WinAnsi only (standard Helvetica, not embedded);
+  anything else is a 400 listing the code points rather than a silently missing glyph.
+* `kb` is exact: an unfiltered random-bytes stream hung off the last page's `/PieceInfo` (the spec's
+  place for private application data) takes up the difference; whitespace in its dictionary absorbs
+  the 16-byte rounding of AES. The size search runs on placeholder bytes, so the real padding is
+  generated (and encrypted) once.
+* Deterministic: no CreationDate, `/ID` and all key material derived from the seed and parameters.
+* Costs (VM, 1 vCPU): 6000 KB / 500 pages ~1.6 s. Pure-Python AES (Lambda has no `cryptography`)
+  ~4 s per MB, hence the 2048 KB cap with a password. Checked independently with qpdf and pdftotext.
+* `mail/send` makes a PDF only for a GENERATED attachment whose `filename` ends `.pdf`; a saved or
+  received `.pdf` is still spliced byte for byte. Behaviour change: `filename=x.pdf` on its own (no
+  `attachmentkb`/`*64`) used to send no attachment and now sends a one-page PDF.

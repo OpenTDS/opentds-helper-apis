@@ -11,6 +11,12 @@ text), `key` (saved attachment) or `ref` (received attachment, straight from
 the temporary store - no promotion needed). `prepend64` / `overwrite64` /
 `append64` splice bytes into whichever attachment that is (or into an empty
 one when no source is given).
+
+A generated attachment whose `filename` ends in .pdf is a real PDF instead
+(mail/attachments/make's writer): `attachmentkb` and/or `pages` size it,
+`prepend64` / `overwrite64` / `append64` are UTF-8 text placed on the first,
+middle and last page, and `password`, `seed` and `paper` apply. A saved or
+received .pdf (`key` / `ref`) is still spliced byte for byte, as before.
 """
 import json
 import mimetypes
@@ -24,6 +30,7 @@ from email.mime.text import MIMEText
 from email.utils import parseaddr
 
 from common import ApiError, KEY_RE, KEY_RULE, b64decode, respond
+import mail_attachments
 import mail_store
 
 # Two SES clients on purpose:
@@ -219,6 +226,17 @@ def _query_attachment(req):
     if len(given) > 1:
         raise ApiError(400, 'attachmentkb, key and ref are mutually exclusive; pass one.',
                        received=given)
+    name = req.text('filename') or ''
+    if key is None and ref is None and name.lower().endswith('.pdf'):
+        # Generated PDF: text placed by page, not bytes spliced by offset.
+        data, report, seed = mail_attachments.pdf_from_request(req, 'attachmentkb', with_info=False)
+        fname = mail_attachments._pdf_name(req, seed)
+        pdf = {k: report[k] for k in ('pages', 'paddingBytes', 'encrypted', 'placement')}
+        pdf['seed'] = seed
+        return [(fname, data, True, {'pdf': pdf})]
+    if req.get('pages') not in (None, ''):
+        raise ApiError(400, "'pages' applies to a generated PDF attachment: add filename=<name>.pdf.",
+                       hint='with key= or ref= the attachment is the stored file as it is')
     inj = {}
     for name in INJECT:
         v = req.get(name)
@@ -277,7 +295,7 @@ def send(req):
 
     message, json_atts, warning = _message_and_json(req)
     if json_atts:
-        if any(req.get(n) not in (None, '') for n in ('key', 'ref', 'attachmentkb') + INJECT):
+        if any(req.get(n) not in (None, '') for n in ('key', 'ref', 'attachmentkb', 'pages') + INJECT):
             raise ApiError(400, 'JSON attachments cannot be combined with the key, ref, '
                                 'attachmentkb or *64 query parameters.')
         atts = _json_attachments(json_atts)
@@ -303,7 +321,7 @@ def send(req):
         msg['From'] = frm
         msg['To'] = to
         msg.attach(MIMEText(message, 'plain', 'utf-8'))
-        for fname, data, binary_default in atts:
+        for fname, data, binary_default, *_extra in atts:
             # Content type from the filename extension; generated text files
             # fall back to text/plain, stored files to octet-stream.
             ctype, _ = mimetypes.guess_type(fname)
@@ -330,7 +348,8 @@ def send(req):
            'sentTime': int(time.time()),
            'from': frm, 'to': to, 'subject': subject,
            'messageBytes': len(raw),
-           'attachments': [{'filename': f, 'bytes': len(d)} for f, d, _b in atts]}
+           'attachments': [dict({'filename': f, 'bytes': len(d)}, **(x[0] if x else {}))
+                           for f, d, _b, *x in atts]}
     if len(raw) > DELIVERY_WARN_BYTES:
         wire_mb = len(raw) / 1048576.0
         refused = ['%s (%d MB)' % (n, c) for n, c in DELIVERY_TIERS if wire_mb > c]

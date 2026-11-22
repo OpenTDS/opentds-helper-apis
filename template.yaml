@@ -1005,7 +1005,7 @@ Resources:
                   - !Sub 'arn:${AWS::Partition}:s3:::${BucketPrefix}-mail-attachments-${AWS::AccountId}-${AWS::Region}'
                   - !Sub 'arn:${AWS::Partition}:s3:::${BucketPrefix}-mail-inbound-${AWS::AccountId}-${AWS::Region}'
               - Effect: Allow
-                Action: [s3:GetObject]
+                Action: [s3:GetObject, s3:PutObject]   # PutObject: attachments/make without a key
                 Resource:
                   - !Sub 'arn:${AWS::Partition}:s3:::${BucketPrefix}-mail-inbound-${AWS::AccountId}-${AWS::Region}/attachments/*'
 

@@ -762,3 +762,126 @@ def test_get_password_errors_and_unencrypted():
     save_raw('notpdf', b'hello world', filename='a.txt')
     st, b = call('attachments/get', {'key': 'notpdf', 'password': 'x'})
     assert st == 400 and 'PDF' in b['error']
+
+
+# --------------------------------------------------------------- make ----
+def b64(s):
+    return base64.b64encode(s.encode('utf-8')).decode('ascii')
+
+
+def find_on(ident, text, **extra):
+    qs = dict(ident, text=text, **extra)
+    st, b = call('attachments/find', qs)
+    assert st == 200, b
+    return b
+
+
+def test_make_default_is_a_one_page_pdf_under_a_ref():
+    st, b = call('attachments/make', {})
+    assert st == 200, b
+    assert b['result'] == 'made' and b['source'] == 'made' and b['expiresInDays'] == 7
+    assert b['pages'] == 1 and b['filename'].endswith('.pdf') and b['contentType'] == 'application/pdf'
+    data = base64.b64decode(b['data'])
+    assert data.startswith(b'%PDF-1.7') and len(data) == b['bytes']
+    pages, info, meta = mail_pdf.extract(data)
+    assert len(pages) == 1 and info['Producer'].startswith('Test Helper API v1')
+    # the ref behaves like any temporary attachment
+    st, g = call('attachments/get', {'ref': b['ref']})
+    assert st == 200 and g['source'] == 'made' and base64.b64decode(g['data']) == data
+
+
+def test_make_places_injected_text_by_page():
+    st, b = call('attachments/make', {'key': 'inj.pdf', 'pages': '5',
+                                      'prepend64': b64('Reference: ABC-123'),
+                                      'overwrite64': b64('MIDDLE marker 42'),
+                                      'append64': b64('Signed: Zoë Müller')})
+    assert st == 200, b
+    assert b['source'] == 'saved' and b['pages'] == 5
+    assert b['placement'] == {'prepend': {'page': 1, 'lines': 1},
+                              'overwrite': {'page': 3, 'lines': 1},
+                              'append': {'page': 5, 'lines': 1}}
+    st, t = call('attachments/text', {'key': 'inj.pdf'})
+    assert st == 200, t
+    texts = [p['text'].split('\n') for p in t['pages']]
+    assert texts[0][0] == 'Reference: ABC-123'
+    assert 'MIDDLE marker 42' in texts[2] and not any('MIDDLE' in l for p in (0, 1, 3, 4) for l in texts[p])
+    assert texts[4][-1] == 'Signed: Zoë Müller'
+    assert find_on({'key': 'inj.pdf'}, 'ABC-123')['count'] == 1
+
+
+def test_make_exact_size_and_pages_with_kb():
+    st, b = call('attachments/make', {'kb': '300', 'url': 'true'})
+    assert st == 200, b
+    assert b['bytes'] == 300 * 1024 and b['pages'] > 50 and 'url' in b and 'data' not in b
+    st, b = call('attachments/make', {'kb': '100', 'pages': '3'})
+    assert st == 200 and b['bytes'] == 100 * 1024 and b['pages'] == 3 and b['paddingBytes'] > 0
+    st, b = call('attachments/make', {'kb': '2', 'pages': '40'})
+    assert st == 400 and b['minKb'] > 2
+
+
+def test_make_is_repeatable_with_a_seed():
+    qs = {'pages': '2', 'seed': 'abc', 'append64': b64('end')}
+    st1, a = call('attachments/make', qs)
+    st2, b = call('attachments/make', qs)
+    assert st1 == st2 == 200 and a['sha256'] == b['sha256'] and a['ref'] != b['ref']
+    st, c = call('attachments/make', {'pages': '2'})
+    assert c['seed'] and c['sha256'] != a['sha256']
+    st, d = call('attachments/make', {'pages': '2', 'seed': c['seed']})
+    assert d['sha256'] == c['sha256']
+
+
+def test_make_password_metadata_round_trip():
+    meta = base64.b64encode(json.dumps({'InvoiceNumber': 'INV-1001'}).encode()).decode()
+    st, b = call('attachments/make', {'key': 'locked.pdf', 'password': 's3cret', 'title': 'Payslip',
+                                      'meta64': meta, 'prepend64': b64('Net pay 1,234.56')})
+    assert st == 200, b
+    assert b['encrypted'] is True and b['encryption'] == 'AES-256'
+    assert b['info']['InvoiceNumber'] == 'INV-1001' and b['info']['Title'] == 'Payslip'
+    st, e = call('attachments/find', {'key': 'locked.pdf', 'text': 'Net pay'})
+    assert st == 422 and e['passwordRequired'] is True
+    st, e = call('attachments/find', {'key': 'locked.pdf', 'text': 'Net pay', 'password': 'nope'})
+    assert st == 422 and e['passwordIncorrect'] is True
+    assert find_on({'key': 'locked.pdf'}, 'Net pay', password='s3cret')['count'] == 1
+    assert find_on({'key': 'locked.pdf'}, 'INV-1001', password='s3cret', **{'in': 'metadata'})['count'] == 1
+
+
+def test_make_refusals():
+    st, b = call('attachments/make', {'prepend64': b64('Hello 世界')})
+    assert st == 400 and b['unsupported'] == ['U+4E16', 'U+754C']
+    st, b = call('attachments/make', {'kb': '9000'})
+    assert st == 400 and 'at most 6000' in b['error']
+    st, b = call('attachments/make', {'kb': '3000', 'password': 'x'})
+    assert st == 400 and b['maxKb'] == 2048
+    st, b = call('attachments/make', {'meta64': b64('[1,2]')})
+    assert st == 400
+    st, b = call('attachments/make', {'paper': 'a3'})
+    assert st == 400 and b['allowed'] == ['a4', 'letter']
+    long = b64(('word ' * 700).strip())
+    st, b = call('attachments/make', {'prepend64': long, 'append64': long})
+    assert st == 400 and b['linesPerPage'] == 52 and 'add pages' in b['hint']
+
+
+def test_make_download_redirects():
+    st, r = call('attachments/make', {'download': 'true', 'filename': 'statement'})
+    assert st == 302 and 'statement.pdf' in urllib.parse.unquote(r['headers']['Location'])
+
+
+def test_send_generates_a_real_pdf_attachment():
+    st, b = call('send', {'from': 'test@' + DOMAIN, 'to': 'catch@' + DOMAIN, 'subject': 'Invoice',
+                          'body': 'attached', 'filename': 'invoice.pdf', 'pages': '3',
+                          'attachmentkb': '50', 'append64': b64('Total due $99.00'), 'seed': 's'})
+    assert st == 200, b
+    att = b['attachments'][0]
+    assert att['filename'] == 'invoice.pdf' and att['bytes'] == 50 * 1024
+    assert att['pdf']['pages'] == 3 and att['pdf']['placement']['append']['page'] == 3
+    assert att['pdf']['seed'] == 's' and att['pdf']['encrypted'] is False
+
+
+def test_send_pages_needs_a_pdf_and_made_refs_send():
+    st, b = call('send', {'from': 'test@' + DOMAIN, 'to': 'catch@' + DOMAIN, 'subject': 'x',
+                          'body': 'x', 'pages': '2'})
+    assert st == 400 and 'filename' in b['error']
+    st, m = call('attachments/make', {'filename': 'letter.pdf'})
+    st, b = call('send', {'from': 'test@' + DOMAIN, 'to': 'catch@' + DOMAIN, 'subject': 'x',
+                          'body': 'x', 'ref': m['ref']})
+    assert st == 200 and b['attachments'] == [{'filename': 'letter.pdf', 'bytes': m['bytes']}]

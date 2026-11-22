@@ -97,7 +97,8 @@ def reset_clients():
 # ---------------------------------------------------------------- refs ----
 def check_ref(ref):
     if not REF_RE.match(ref or ''):
-        raise ApiError(400, "'ref' must be the opaque attachment ref returned by mail/pop "
+        raise ApiError(400, "'ref' must be the opaque attachment ref returned by mail/pop or "
+                            "mail/attachments/make "
                             "(letters and digits, 8-12 characters).", received=ref)
     return ref
 
@@ -107,8 +108,8 @@ def received_key(ref):
 
 
 def ref_not_found(ref):
-    return ApiError(404, 'Received attachment not found (refs expire %d days after the '
-                         'email arrived).' % REF_EXPIRY_DAYS, ref=ref)
+    return ApiError(404, 'Attachment not found (refs expire %d days after they were '
+                         'issued).' % REF_EXPIRY_DAYS, ref=ref)
 
 
 def key_not_found(key):

@@ -207,6 +207,7 @@ Different services put the thing you asked for in different fields. Read these, 
 | `mail/attachments/text` | `pages[].text` | 404 / 422 |
 | `mail/attachments/find` | `count`, `values`, `results[]` | `count: 0` with `hint` (200) |
 | `mail/attachments/compare` | `same` (boolean), `verdict` | 404 |
+| `mail/attachments/make` | `ref` (or `key`), `placement`, `bytes`, `seed` | 400 (text that does not fit or cannot be shown) |
 | `sms/get` | `body`, `sender`, `mocked` | `found: false`, `body: null` (200) |
 | `webhook/list` | `events` (array) | `events: []` (200) |
 | `totp/get` | `code` (string), plus `nextCode`, `previousCode`, `secondsRemaining` | 404 |
@@ -243,6 +244,8 @@ Different services put the thing you asked for in different fields. Read these, 
 | Receive an email my application sent (verification links, OTP codes) | `mail/pop` |
 | Send an email INTO my application (email-to-case, inbound parsing) | `mail/send` (the recipient must be at `{MAIL_DOMAIN}` or allow-listed) |
 | Send an email with an attachment of a given size or content | `mail/send` with `attachmentkb`, `key` or `ref` |
+| Make a PDF of a given size or page count, with known text on a known page — to submit to an upload form or API, then match later (upload limits, parsers, document processing) | `mail/attachments/make` |
+| Email a generated PDF (with text to look for later) | `mail/send` with `filename=….pdf` and `pages` / `attachmentkb` |
 | Store a file to attach to emails later | `mail/attachments/save` or `mail/attachments/upload/url` |
 | Store a file my app produced (e.g. a PDF downloaded from an order screen) so it can be checked | POST `mail/attachments/save?key=…&filename=….pdf` |
 | Check that two files are the same document (the emailed PDF vs the one my app serves) | `mail/attachments/compare` |
@@ -969,8 +972,17 @@ Call this at the start of a test (or use a fresh address per run) so old message
 | `prepend64` | | Base64 content to add at the START of the attachment |
 | `overwrite64` | | Base64 content to write over the MIDDLE of the attachment |
 | `append64` | | Base64 content to add at the END of the attachment |
+| `pages` | | Pages of a generated PDF attachment (needs `filename=….pdf`) |
+| `password` / `password64` | | Password-protect a generated PDF attachment |
+| `seed` / `paper` | | Repeatable generated PDF / `a4` (default) or `letter` |
 
 `attachmentkb`, `key` and `ref` are mutually exclusive.
+
+**Generated PDF attachment:** with no `key` or `ref` and a `filename` ending `.pdf`, the attachment is a real PDF made exactly as by `mail/attachments/make` — `attachmentkb` and/or `pages` size it, and `prepend64` / `overwrite64` / `append64` are UTF-8 text placed at the top of page 1, the middle page and the bottom of the last page (not bytes). Each entry of `attachments` in the response then carries `pdf` (`pages`, `placement`, `seed`…). A saved or received `.pdf` (`key` / `ref`) is sent as it is, with any `*64` bytes spliced in as for other files.
+
+```
+GET {BASE_URL}/mail/send?from=qa@{MAIL_DOMAIN}&to=inbox-run42@{MAIL_DOMAIN}&subject=Invoice&body=attached&filename=invoice.pdf&pages=3&append64=VG90YWwgZHVlICQ5OS4wMA
+```
 
 Simple (sent to the catcher, so the test can pop it straight back):
 ```
@@ -1145,6 +1157,75 @@ How to read it:
 * `propertyDifferences` lists PDF document properties (Title, CreationDate, custom keys…) that differ. They are reported but do not affect `same`.
 
 Works for any file type `mail/attachments/text` reads (PDF, Word, Excel, PowerPoint, text). 404 if either file does not exist; 422 for a protected PDF without the right password.
+
+#### `mail/attachments/make` — generate a PDF
+
+Makes a real PDF (text, several pages, prose-like filler) and stores it like any other attachment — so `mail/send`, `get`, `text`, `find` and `compare` all take it. Use it for upload-limit tests, document-processing tests and "the PDF must contain X on page N" checks.
+
+| Param | Required | Meaning |
+|---|---|---|
+| `pages` | | Number of pages, 1–500. Default 1 (or, with only `kb`, as many pages as fit) |
+| `kb` | | Exact file size in KB, 1–6000 (1–2048 with a password). Padding the viewer ignores makes up the difference |
+| `prepend64` | | Base64 of UTF-8 text for the **first lines of page 1** |
+| `overwrite64` | | Base64 of UTF-8 text placed in the **middle of the middle page** |
+| `append64` | | Base64 of UTF-8 text for the **last lines of the last page** |
+| `key` | | Save under this key (kept until deleted). Without it you get a `ref` (kept 7 days) |
+| `filename` | | Filename (`.pdf` added if missing) |
+| `title` / `author` / `subject` | | Document properties (each also as `…64`). The title is also printed in bold at the top of page 1 |
+| `meta64` | | Base64 of a JSON object of custom properties, e.g. `{"InvoiceNumber":"INV-1001"}` |
+| `password` / `password64` | | Protect it with this password (AES-256) |
+| `seed` | | Same parameters + same seed = the same bytes. Without it one is chosen and returned |
+| `paper` | | `a4` (default) or `letter` |
+| `url` / `view` / `download` | | As for `mail/attachments/get` |
+
+```
+GET {BASE_URL}/mail/attachments/make?pages=5&prepend64=UmVmZXJlbmNlOiBBQkMtMTIz&overwrite64=QXBwcm92ZWQgYnk6IFFB&append64=VG90YWwgZHVlICQ5OS4wMA
+```
+
+Response (200):
+```json
+{
+  "result": "made", "ref": "k3v9q0zr2m", "source": "made", "expiresInDays": 7,
+  "filename": "document-1f0c9a2b.pdf", "bytes": 9874, "contentType": "application/pdf",
+  "sha256": "5d1e…", "seed": "a81c0f3e92d4", "pages": 5, "paddingBytes": 0, "encrypted": false,
+  "paper": "a4", "linesPerPage": 52,
+  "placement": { "prepend": { "page": 1, "lines": 1 }, "overwrite": { "page": 3, "lines": 1 }, "append": { "page": 5, "lines": 1 } },
+  "info": { "Producer": "Test Helper API v1 (mail/attachments/make)" },
+  "data": "JVBERi0xLjcK…"
+}
+```
+
+Then, for example: `mail/attachments/find?ref=k3v9q0zr2m&text=ABC-123` (finds it, `page: 1`), or `mail/send?…&ref=k3v9q0zr2m` to email it.
+
+**Use it whenever a test has to submit a PDF** — to an upload field, a document-processing API, a claim or application form — and either the size matters (`kb` is exact to the byte, so you can test just under and just over a limit) or the system's output must later be matched to what was submitted. Put a unique value (a run id, a reference number) in the PDF with `prepend64` / `overwrite64` / `append64` or `meta64`, submit it, then look for that value wherever the system says it went: a confirmation email (`mail/pop`, then `mail/attachments/find` on the received copy), a screen, or a downloaded file (`mail/attachments/save`, then `find` or `compare` against the `ref` you made).
+
+To get the file to submit: `download=true` saves it from a browser; from a script, take `data` (base64) from the JSON, or pass `url=true` and fetch the presigned `url`.
+
+Ready-to-use examples (each opens the PDF in a browser tab because of `view=true`; drop it to get the JSON with `ref`, `placement`, `seed` and `sha256`):
+
+1. Three pages with known text on the first, middle and last page — "Reference: ABC-123" first on page 1, "Approved by: QA" in the middle of page 2, "Total due: $99.00" as the last line of page 3:
+```
+GET {BASE_URL}/mail/attachments/make?pages=3&prepend64=UmVmZXJlbmNlOiBBQkMtMTIz&overwrite64=QXBwcm92ZWQgYnk6IFFB&append64=VG90YWwgZHVlOiAkOTkuMDA&view=true
+```
+
+2. Document properties and accented text — a bold "Tax invoice" title, "Customer: Zoë Müller", Author `Accounts` and a custom `InvoiceNumber` of `INV-1001` (`find?ref=…&text=INV-1001&in=metadata` finds it); `seed=demo1` makes the same file every time:
+```
+GET {BASE_URL}/mail/attachments/make?title=Tax%20invoice&author=Accounts&meta64=eyJJbnZvaWNlTnVtYmVyIjogIklOVi0xMDAxIn0&prepend64=Q3VzdG9tZXI6IFpvw6sgTcO8bGxlcg&seed=demo1&view=true
+```
+
+3. Password-protected and exactly 200 KB (204,800 bytes) — the viewer asks for the password `secret`; `find` and `text` need `password=secret` too:
+```
+GET {BASE_URL}/mail/attachments/make?kb=200&password=secret&prepend64=UmVmZXJlbmNlOiBBQkMtMTIz&view=true
+```
+
+The `*64` values are the base64 of the UTF-8 text (URL-safe alphabet, padding dropped, so they paste into a URL as they are). To make your own: base64 the text, e.g. `Reference: ABC-123` → `UmVmZXJlbmNlOiBBQkMtMTIz`.
+
+Notes:
+* Text is placed **by page**, not by byte offset — splicing bytes into a PDF breaks it. Each value starts on its own line and wraps only at spaces, so a phrase you search for stays together unless it is longer than a line (about 95 characters).
+* Only Western European (WinAnsi) characters can be shown: accents, `€` and curly quotes are fine; other scripts and emoji are a 400 listing the code points.
+* Too much text for a page is a 400 with `linesPerPage` — add pages. `kb` too small for the pages is a 400 with `minKb`.
+* With `password`, `mail/attachments/find` and `text` need the same `password` (422 `passwordRequired` without it).
+* Without `kb`, filler compresses about 3:1, so a page is roughly 2 KB.
 
 #### `mail/attachments/find` — search inside a file
 

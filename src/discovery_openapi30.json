@@ -4091,7 +4091,7 @@
       "schema": {
        "type": "string"
       },
-      "description": "Filename shown in the email ('.txt' appended if it has no extension). Defaults to the key, the received attachment's original filename, or a random name for generated text.",
+      "description": "Filename shown in the email ('.txt' appended if it has no extension). Defaults to the key, the received attachment's original filename, or a random name for generated text. A generated attachment (no key or ref) named *.pdf is a real PDF made as by mail/attachments/make: attachmentkb and/or pages size it, the *64 values are UTF-8 text placed on the first, middle and last page, and password, seed and paper apply.",
       "example": "report.pdf"
      },
      {
@@ -4101,7 +4101,7 @@
       "schema": {
        "type": "string"
       },
-      "description": "Base64 bytes to insert at the start of the attachment (e.g. a scanner test signature). Applies to generated, saved or received attachments; on its own it creates an attachment from just these bytes.",
+      "description": "Base64 bytes to insert at the start of the attachment (e.g. a scanner test signature). Applies to generated, saved or received attachments; on its own it creates an attachment from just these bytes. With a generated *.pdf filename: UTF-8 text placed by page instead (see mail/attachments/make).",
       "example": "U1RBUlQ="
      },
      {
@@ -4111,7 +4111,7 @@
       "schema": {
        "type": "string"
       },
-      "description": "Base64 bytes to write over the middle of the attachment (same length replaced).",
+      "description": "Base64 bytes to write over the middle of the attachment (same length replaced). With a generated *.pdf filename: UTF-8 text placed by page instead (see mail/attachments/make).",
       "example": "TUlERExF"
      },
      {
@@ -4121,8 +4121,60 @@
       "schema": {
        "type": "string"
       },
-      "description": "Base64 bytes to append to the end of the attachment.",
+      "description": "Base64 bytes to append to the end of the attachment. With a generated *.pdf filename: UTF-8 text placed by page instead (see mail/attachments/make).",
       "example": "RU5E"
+     },
+     {
+      "name": "pages",
+      "in": "query",
+      "required": false,
+      "schema": {
+       "type": "integer",
+       "minimum": 1,
+       "maximum": 500
+      },
+      "description": "Pages of a generated PDF attachment (needs filename=*.pdf), 1-500.",
+      "example": 3
+     },
+     {
+      "name": "password",
+      "in": "query",
+      "required": false,
+      "schema": {
+       "type": "string"
+      },
+      "description": "Password-protect a generated PDF attachment (AES-256; attachmentkb up to 2048)."
+     },
+     {
+      "name": "password64",
+      "in": "query",
+      "required": false,
+      "schema": {
+       "type": "string"
+      },
+      "description": "Base64 of the UTF-8 password."
+     },
+     {
+      "name": "seed",
+      "in": "query",
+      "required": false,
+      "schema": {
+       "type": "string"
+      },
+      "description": "Repeatable generated PDF attachment."
+     },
+     {
+      "name": "paper",
+      "in": "query",
+      "required": false,
+      "schema": {
+       "type": "string",
+       "enum": [
+        "a4",
+        "letter"
+       ]
+      },
+      "description": "a4 (default) or letter, for a generated PDF attachment."
      }
     ],
     "responses": {
@@ -4174,6 +4226,11 @@
              },
              "bytes": {
               "type": "integer"
+             },
+             "pdf": {
+              "type": "object",
+              "description": "Generated PDF attachments only: pages, paddingBytes, encrypted, placement and seed, as from mail/attachments/make.",
+              "additionalProperties": true
              }
             }
            }
@@ -4351,7 +4408,7 @@
       "schema": {
        "type": "string"
       },
-      "description": "Filename shown in the email ('.txt' appended if it has no extension). Defaults to the key, the received attachment's original filename, or a random name for generated text.",
+      "description": "Filename shown in the email ('.txt' appended if it has no extension). Defaults to the key, the received attachment's original filename, or a random name for generated text. A generated attachment (no key or ref) named *.pdf is a real PDF made as by mail/attachments/make: attachmentkb and/or pages size it, the *64 values are UTF-8 text placed on the first, middle and last page, and password, seed and paper apply.",
       "example": "report.pdf"
      },
      {
@@ -4361,7 +4418,7 @@
       "schema": {
        "type": "string"
       },
-      "description": "Base64 bytes to insert at the start of the attachment (e.g. a scanner test signature). Applies to generated, saved or received attachments; on its own it creates an attachment from just these bytes.",
+      "description": "Base64 bytes to insert at the start of the attachment (e.g. a scanner test signature). Applies to generated, saved or received attachments; on its own it creates an attachment from just these bytes. With a generated *.pdf filename: UTF-8 text placed by page instead (see mail/attachments/make).",
       "example": "U1RBUlQ="
      },
      {
@@ -4371,7 +4428,7 @@
       "schema": {
        "type": "string"
       },
-      "description": "Base64 bytes to write over the middle of the attachment (same length replaced).",
+      "description": "Base64 bytes to write over the middle of the attachment (same length replaced). With a generated *.pdf filename: UTF-8 text placed by page instead (see mail/attachments/make).",
       "example": "TUlERExF"
      },
      {
@@ -4381,8 +4438,60 @@
       "schema": {
        "type": "string"
       },
-      "description": "Base64 bytes to append to the end of the attachment.",
+      "description": "Base64 bytes to append to the end of the attachment. With a generated *.pdf filename: UTF-8 text placed by page instead (see mail/attachments/make).",
       "example": "RU5E"
+     },
+     {
+      "name": "pages",
+      "in": "query",
+      "required": false,
+      "schema": {
+       "type": "integer",
+       "minimum": 1,
+       "maximum": 500
+      },
+      "description": "Pages of a generated PDF attachment (needs filename=*.pdf), 1-500.",
+      "example": 3
+     },
+     {
+      "name": "password",
+      "in": "query",
+      "required": false,
+      "schema": {
+       "type": "string"
+      },
+      "description": "Password-protect a generated PDF attachment (AES-256; attachmentkb up to 2048)."
+     },
+     {
+      "name": "password64",
+      "in": "query",
+      "required": false,
+      "schema": {
+       "type": "string"
+      },
+      "description": "Base64 of the UTF-8 password."
+     },
+     {
+      "name": "seed",
+      "in": "query",
+      "required": false,
+      "schema": {
+       "type": "string"
+      },
+      "description": "Repeatable generated PDF attachment."
+     },
+     {
+      "name": "paper",
+      "in": "query",
+      "required": false,
+      "schema": {
+       "type": "string",
+       "enum": [
+        "a4",
+        "letter"
+       ]
+      },
+      "description": "a4 (default) or letter, for a generated PDF attachment."
      }
     ],
     "responses": {
@@ -4434,6 +4543,11 @@
              },
              "bytes": {
               "type": "integer"
+             },
+             "pdf": {
+              "type": "object",
+              "description": "Generated PDF attachments only: pages, paddingBytes, encrypted, placement and seed, as from mail/attachments/make.",
+              "additionalProperties": true
              }
             }
            }
@@ -6193,6 +6307,400 @@
         }
        }
       }
+     },
+     "default": {
+      "$ref": "#/components/responses/Error"
+     }
+    }
+   }
+  },
+  "/mail/attachments/make": {
+   "get": {
+    "tags": [
+     "mail"
+    ],
+    "operationId": "mailAttachmentsMake",
+    "summary": "Generate a PDF: pages, exact size, text placed by page, password",
+    "description": "Generates a real PDF (Helvetica text, one compressed content stream per page, prose-like filler) and stores it like any other attachment: under `key` in the SAVED store, or as a temporary attachment with a `ref` (7 days). Either way mail/send, mail/attachments/get, find, text and compare take it.\n\nSize it by `pages` (what parsers, OCR and processing time feel) and/or `kb` (what upload limits and mail size caps feel; exact to the byte). Place known text with `prepend64` (top of page 1), `overwrite64` (middle page) and `append64` (bottom of the last page) - by page, not by byte offset, because splicing bytes into a PDF corrupts it. `placement` in the response says where each value went, so a test can assert both that the text is there and on which page.\n\n`password` protects it with AES-256; mail/attachments/find without it is then a 422 passwordRequired. `title`, `author`, `subject` and `meta64` set document properties. The same parameters with the same `seed` give the same bytes; no creation date is written.",
+    "parameters": [
+     {
+      "name": "key",
+      "in": "query",
+      "required": false,
+      "schema": {
+       "type": "string"
+      },
+      "description": "Save the PDF in the SAVED store under this key (kept until deleted). Without key it is a temporary attachment with a ref (kept 7 days), usable wherever ref= is.",
+      "example": "invoice-run42.pdf"
+     },
+     {
+      "name": "filename",
+      "in": "query",
+      "required": false,
+      "schema": {
+       "type": "string"
+      },
+      "description": "Filename ('.pdf' appended if missing). Default document-<hash>.pdf.",
+      "example": "invoice.pdf"
+     },
+     {
+      "name": "pages",
+      "in": "query",
+      "required": false,
+      "schema": {
+       "type": "integer",
+       "minimum": 1,
+       "maximum": 500
+      },
+      "description": "Number of pages, 1-500 (clamped). Without pages or kb: 1 page; with only kb: as many pages of text as fit, then padding.",
+      "example": 5
+     },
+     {
+      "name": "kb",
+      "in": "query",
+      "required": false,
+      "schema": {
+       "type": "integer",
+       "minimum": 1,
+       "maximum": 6000
+      },
+      "description": "Exact file size in KB (1-6000; 1-2048 with a password). Filler text compresses about 3:1, so the size is reached with an incompressible private-data stream that viewers ignore. A size too small for the pages asked for is a 400 with minKb.",
+      "example": 200
+     },
+     {
+      "name": "prepend64",
+      "in": "query",
+      "required": false,
+      "schema": {
+       "type": "string"
+      },
+      "description": "Base64 of UTF-8 text for the first lines of page 1 (the first thing a reader extracts). Each value starts on its own line and wraps only at spaces; newlines start new lines. WinAnsi (Western European) characters only - anything else is a 400 listing the code points. Up to 4000 characters.",
+      "example": "UmVmZXJlbmNlOiBBQkMtMTIz"
+     },
+     {
+      "name": "overwrite64",
+      "in": "query",
+      "required": false,
+      "schema": {
+       "type": "string"
+      },
+      "description": "Base64 of UTF-8 text placed in place of filler lines, centred on the middle page (page (pages+1)/2, rounded down). Each value starts on its own line and wraps only at spaces; newlines start new lines. WinAnsi (Western European) characters only - anything else is a 400 listing the code points. Up to 4000 characters."
+     },
+     {
+      "name": "append64",
+      "in": "query",
+      "required": false,
+      "schema": {
+       "type": "string"
+      },
+      "description": "Base64 of UTF-8 text for the last lines of the last page. Each value starts on its own line and wraps only at spaces; newlines start new lines. WinAnsi (Western European) characters only - anything else is a 400 listing the code points. Up to 4000 characters."
+     },
+     {
+      "name": "password",
+      "in": "query",
+      "required": false,
+      "schema": {
+       "type": "string"
+      },
+      "description": "Protect the PDF with this user password (AES-256, revision 6). Every permission is granted; the owner password is not disclosed. Use password64 for + & % # or non-ASCII characters.",
+      "example": "secret"
+     },
+     {
+      "name": "password64",
+      "in": "query",
+      "required": false,
+      "schema": {
+       "type": "string"
+      },
+      "description": "Base64 of the UTF-8 password."
+     },
+     {
+      "name": "seed",
+      "in": "query",
+      "required": false,
+      "schema": {
+       "type": "string"
+      },
+      "description": "Makes the file repeatable: the same parameters and seed give the same bytes. Without it a random seed is chosen and returned.",
+      "example": "run42"
+     },
+     {
+      "name": "paper",
+      "in": "query",
+      "required": false,
+      "schema": {
+       "type": "string",
+       "enum": [
+        "a4",
+        "letter"
+       ]
+      },
+      "description": "a4 (default) or letter.",
+      "example": "a4"
+     },
+     {
+      "name": "title",
+      "in": "query",
+      "required": false,
+      "schema": {
+       "type": "string"
+      },
+      "description": "Document title (Info /Title), also shown in bold at the top of page 1, below any prepend text.",
+      "example": "Tax invoice"
+     },
+     {
+      "name": "title64",
+      "in": "query",
+      "required": false,
+      "schema": {
+       "type": "string"
+      },
+      "description": "Base64 of the UTF-8 title."
+     },
+     {
+      "name": "author",
+      "in": "query",
+      "required": false,
+      "schema": {
+       "type": "string"
+      },
+      "description": "Info /Author.",
+      "example": "Accounts"
+     },
+     {
+      "name": "author64",
+      "in": "query",
+      "required": false,
+      "schema": {
+       "type": "string"
+      },
+      "description": "Base64 of the UTF-8 author."
+     },
+     {
+      "name": "subject",
+      "in": "query",
+      "required": false,
+      "schema": {
+       "type": "string"
+      },
+      "description": "Info /Subject."
+     },
+     {
+      "name": "subject64",
+      "in": "query",
+      "required": false,
+      "schema": {
+       "type": "string"
+      },
+      "description": "Base64 of the UTF-8 subject."
+     },
+     {
+      "name": "meta64",
+      "in": "query",
+      "required": false,
+      "schema": {
+       "type": "string"
+      },
+      "description": "Base64 of a JSON object of custom document properties, e.g. {\"InvoiceNumber\":\"INV-1001\"}. Names: letters, digits, . _ - (64 at most, up to 32 keys). Searchable with mail/attachments/find in=metadata.",
+      "example": "eyJJbnZvaWNlTnVtYmVyIjoiSU5WLTEwMDEifQ"
+     },
+     {
+      "name": "url",
+      "in": "query",
+      "required": false,
+      "schema": {
+       "type": "boolean"
+      },
+      "description": "Return a presigned URL instead of inline base64 (automatic above 4096 KB)."
+     },
+     {
+      "name": "view",
+      "in": "query",
+      "required": false,
+      "schema": {
+       "type": "boolean"
+      },
+      "description": "Answer with a 302 to the PDF, shown in a browser tab."
+     },
+     {
+      "name": "download",
+      "in": "query",
+      "required": false,
+      "schema": {
+       "type": "boolean"
+      },
+      "description": "Answer with a 302 to the PDF, saved by a browser."
+     }
+    ],
+    "responses": {
+     "200": {
+      "description": "OK",
+      "content": {
+       "application/json": {
+        "schema": {
+         "type": "object",
+         "required": [
+          "result",
+          "source",
+          "filename",
+          "bytes",
+          "contentType",
+          "sha256",
+          "seed",
+          "pages",
+          "paddingBytes",
+          "encrypted",
+          "paper",
+          "linesPerPage",
+          "placement",
+          "info"
+         ],
+         "properties": {
+          "result": {
+           "type": "string",
+           "enum": [
+            "made"
+           ]
+          },
+          "key": {
+           "type": "string",
+           "description": "Saved key (when key was given)."
+          },
+          "ref": {
+           "type": "string",
+           "description": "Temporary-attachment ref (no key given)."
+          },
+          "source": {
+           "type": "string",
+           "enum": [
+            "saved",
+            "made"
+           ]
+          },
+          "expiresInDays": {
+           "type": "integer",
+           "description": "With ref: 7."
+          },
+          "filename": {
+           "type": "string"
+          },
+          "bytes": {
+           "type": "integer"
+          },
+          "contentType": {
+           "type": "string"
+          },
+          "sha256": {
+           "type": "string"
+          },
+          "seed": {
+           "type": "string",
+           "description": "Pass it back to make the same file again."
+          },
+          "pages": {
+           "type": "integer"
+          },
+          "paddingBytes": {
+           "type": "integer",
+           "description": "Bytes of the padding stream (0 without kb)."
+          },
+          "encrypted": {
+           "type": "boolean"
+          },
+          "encryption": {
+           "type": "string",
+           "description": "AES-256, when a password was given."
+          },
+          "paper": {
+           "type": "string"
+          },
+          "linesPerPage": {
+           "type": "integer"
+          },
+          "placement": {
+           "type": "object",
+           "description": "Where each injected value went.",
+           "properties": {
+            "prepend": {
+             "type": "object",
+             "required": [
+              "page",
+              "lines"
+             ],
+             "properties": {
+              "page": {
+               "type": "integer",
+               "description": "Page the text is on, from 1."
+              },
+              "lines": {
+               "type": "integer",
+               "description": "Lines it was wrapped to."
+              }
+             }
+            },
+            "overwrite": {
+             "type": "object",
+             "required": [
+              "page",
+              "lines"
+             ],
+             "properties": {
+              "page": {
+               "type": "integer",
+               "description": "Page the text is on, from 1."
+              },
+              "lines": {
+               "type": "integer",
+               "description": "Lines it was wrapped to."
+              }
+             }
+            },
+            "append": {
+             "type": "object",
+             "required": [
+              "page",
+              "lines"
+             ],
+             "properties": {
+              "page": {
+               "type": "integer",
+               "description": "Page the text is on, from 1."
+              },
+              "lines": {
+               "type": "integer",
+               "description": "Lines it was wrapped to."
+              }
+             }
+            }
+           }
+          },
+          "info": {
+           "type": "object",
+           "description": "Document properties written (Title, Author, custom keys, Producer).",
+           "additionalProperties": {
+            "type": "string"
+           }
+          },
+          "data": {
+           "type": "string",
+           "description": "The PDF as base64 (when not served as url)."
+          },
+          "url": {
+           "type": "string"
+          },
+          "expiresInSeconds": {
+           "type": "integer"
+          }
+         }
+        }
+       }
+      }
+     },
+     "302": {
+      "description": "view=true or download=true: redirect to the PDF."
+     },
+     "400": {
+      "$ref": "#/components/responses/Error"
      },
      "default": {
       "$ref": "#/components/responses/Error"

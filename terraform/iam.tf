@@ -81,7 +81,7 @@ locals {
       },
       {
         Effect   = "Allow"
-        Action   = ["s3:GetObject"]
+        Action   = ["s3:GetObject", "s3:PutObject"] # PutObject: attachments/make without a key
         Resource = ["${local.bucket_arn.inbound}/attachments/*"]
       },
     ]
