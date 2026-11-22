@@ -2,7 +2,7 @@
 
 > **Open source (MIT), not accepting contributions at this time.** Fork freely; see [CONTRIBUTING.md](CONTRIBUTING.md).
 
-**Status (v1.0.0):** deployed from a fresh clone into a brand-new AWS account and
+**Status (v1.3.0):** deployed from a fresh clone into a brand-new AWS account and
 checked end to end with [`scripts/test-deployment.ps1`](scripts/test-deployment.ps1);
 the offline test suite runs on every push. Deploying from GitHub Actions
 (`scripts/setup-github-deploy.ps1`) is new and has not yet been run against a real
